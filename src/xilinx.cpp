@@ -277,13 +277,14 @@ Xilinx::Xilinx(Jtag *jtag, const std::string &filename,
 	const std::string &spiOverJtagPath,
 	const std::string &target_flash,
 	bool verify, int8_t verbose,
-	bool skip_load_bridge, bool skip_reset, bool read_dna, bool read_xadc):
+	bool skip_load_bridge, bool skip_reset, bool read_dna, bool read_xadc,
+	bool partial):
 	Device(jtag, filename, file_type, verify, verbose),
 	SPIInterface(filename, verbose, 256, verify, skip_load_bridge,
 				 skip_reset),
 	_device_package(device_package), _spiOverJtagPath(spiOverJtagPath),
 	_irlen(6), _secondary_filename(secondary_filename), _soj_is_v2(false),
-	_jtag_chain_len(1), _is_bpi_board(!spi_flash_type)
+	_jtag_chain_len(1), _is_bpi_board(!spi_flash_type), _partial(partial)
 {
 	if (prg_type == Device::RD_FLASH) {
 		_mode = Device::READ_MODE;
@@ -862,30 +863,61 @@ void Xilinx::program_mem(ConfigBitstreamParser *bitfile)
 	 *    starting in the TLR (Test-Logic-Reset) state.
 	 */
 	_jtag->go_test_logic_reset();
-	/*
-	 * 2: Move into the RTI state.                        X     0   1
-	 * 3: Move into the SELECT-IR state.                  X     1   2
-	 * 4: Enter the SHIFT-IR state.                       X     0   2
-	 * 5: Start loading the JPROGRAM instruction,     01011(4)  0   5
-	 *    LSB first:
-	 * 6: Load the MSB of the JPROGRAM instruction
-	 *    when exiting SHIFT-IR, as defined in the        0     1   1
-	 *    IEEE standard.
-	 * 7: Place a logic 1 on the TMS and clock the
-	 *    TCK five times. This ensures starting in        X     1   5
-	 *    the TLR (Test-Logic-Reset) state.
+
+	/* HOISTED OUT OF THE GUARDED BLOCK BELOW, AND THIS IS REQUIRED RATHER THAN
+	 * TIDYING.  tx_buf used to be assigned inside the JPROGRAM block as the
+	 * BYPASS ircode for the INIT_B poll, and it is READ AGAIN near the end of
+	 * this function for the closing status shift.  Guarding the block without
+	 * hoisting this line leaves tx_buf uninitialised on the --partial path and
+	 * shifts a garbage instruction into the IR of a running device.
 	 */
-	_jtag->shiftIR(get_ircode(_ircode_map, "JPROGRAM"), NULL, _irlen);
-	/* Poll INIT_B (bit 4 of IR capture) until config memory is cleared */
 	tx_buf = get_ircode(_ircode_map, "BYPASS");
-	do {
-		_jtag->shiftIR(tx_buf, rx_buf, _irlen);
-	} while (!(rx_buf[0] & 0x10));
-	/*
-	 * 8: Move into the RTI state.                        X     0   10,000(1)
+
+	if (!_partial) {
+		/*
+		 * 2: Move into the RTI state.                        X     0   1
+		 * 3: Move into the SELECT-IR state.                  X     1   2
+		 * 4: Enter the SHIFT-IR state.                       X     0   2
+		 * 5: Start loading the JPROGRAM instruction,     01011(4)  0   5
+		 *    LSB first:
+		 * 6: Load the MSB of the JPROGRAM instruction
+		 *    when exiting SHIFT-IR, as defined in the        0     1   1
+		 *    IEEE standard.
+		 * 7: Place a logic 1 on the TMS and clock the
+		 *    TCK five times. This ensures starting in        X     1   5
+		 *    the TLR (Test-Logic-Reset) state.
+		 */
+		_jtag->shiftIR(get_ircode(_ircode_map, "JPROGRAM"), NULL, _irlen);
+		/* Poll INIT_B (bit 4 of IR capture) until config memory is cleared */
+		do {
+			_jtag->shiftIR(tx_buf, rx_buf, _irlen);
+		} while (!(rx_buf[0] & 0x10));
+		/*
+		 * 8: Move into the RTI state.                        X     0   10,000(1)
+		 */
+		_jtag->set_state(Jtag::RUN_TEST_IDLE);
+		_jtag->toggleClk(10000*12);
+	}
+	/* WHY THE BLOCK ABOVE IS SKIPPED FOR A PARTIAL.
+	 *
+	 * UG470 v1.10 Table 10-4 note 3 attaches JPROGRAM to devices "that need to
+	 * be reconfigured ... to clear the prior configuration".  UG909's "System
+	 * Design for Configuring an FPGA" is explicit in the other direction: "It
+	 * is common to assert the INIT or PROG signals on the FPGA configuration
+	 * interface before downloading a full BIT file.  This must not be done
+	 * before downloading a partial BIT file, as that would indicate the
+	 * delivery of a full BIT file, not a partial one."
+	 *
+	 * JPROGRAM clears the whole configuration memory, so on a running device it
+	 * destroys the static design that the partial is meant to be loaded
+	 * alongside.  A partial therefore starts at step 9 below -- which is not an
+	 * invention: it is UG470's own Multiple Device Configuration procedure,
+	 * steps 2-3, written out by the vendor with no JPROGRAM in it.
+	 *
+	 * The INIT_B poll goes with it.  It exists to wait for the memory clear
+	 * that no longer happens, and on a configured device INIT_B is already
+	 * high, so keeping it would be a shift with nothing to wait for.
 	 */
-	_jtag->set_state(Jtag::RUN_TEST_IDLE);
-	_jtag->toggleClk(10000*12);
 	/*
 	 * 9: Start loading the CFG_IN instruction,
 	 *    LSB first:                                    00101   0   5
@@ -954,6 +986,45 @@ void Xilinx::program_mem(ConfigBitstreamParser *bitfile)
 				printSuccess("PDI programing success");
 			}
 		}
+	else if (_partial) {
+		/* NO JSTART, AND NO toggleClk.
+		 *
+		 * JSTART re-runs the startup sequence, which toggles GWE, GTS and GSR
+		 * globally: the static design's flip-flops would be reset and its
+		 * outputs three-stated.  That is precisely the disturbance a partial
+		 * load exists to avoid, and it is why Vivado's own partial streams
+		 * carry no START, GRESTORE, AGHIGH, DGHIGH, GCAPTURE, SWITCH,
+		 * SHUTDOWN or IPROG at all -- measured across eighteen vendor-built
+		 * partial arms for this part, against nine such commands in the full
+		 * bitstream of the same design.
+		 *
+		 * No trailing toggleClk either, deliberately.  The stream ends
+		 * RCRC ... CRC, DESYNC and both Vivado and our own writer emit exactly
+		 * sixteen NOPs after the DESYNC (measured), which have already been
+		 * shifted by the loop above.  DESYNC has released the configuration
+		 * engine, so a register read re-syncs cleanly and needs no idle of our
+		 * own.
+		 *
+		 * read_register("STAT") is the verdict, and it costs no new code:
+		 * dumpRegister() drives CFG_IN/CFG_OUT on a configured device with no
+		 * JPROGRAM anywhere, which is the shipped existence proof that this
+		 * whole path works without clearing configuration memory.  It matters
+		 * for a partial specifically: the stream sets CTL0 bit 10
+		 * (ConfigFallback) and never clears it, so a bad CRC leaves the device
+		 * STOPPED with an error to read rather than silently falling back to a
+		 * boot from flash -- which would reload the whole device and destroy
+		 * the static.
+		 *
+		 * The RUN_TEST_IDLE below is a no-op after step 16 above and the
+		 * go_test_logic_reset is repeated by dumpRegister's own first line.
+		 * Both are written out anyway so that this arm reads as the complete
+		 * sequence it is, rather than as something that depends on what the
+		 * lines above and below it happen to do today.
+		 */
+		_jtag->set_state(Jtag::RUN_TEST_IDLE);
+		_jtag->go_test_logic_reset();
+		read_register("STAT");
+	}
 	else {
 		/*
 		* 17: Enter the SELECT-IR state.                     X     1   2
