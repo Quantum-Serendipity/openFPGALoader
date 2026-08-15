@@ -967,6 +967,29 @@ void Xilinx::program_mem(ConfigBitstreamParser *bitfile)
 	 */
 	tx_buf = get_ircode(_ircode_map, "BYPASS");
 
+	if (_partial) {
+		/* 5. REFUSE A PARTIAL INTO AN UNCONFIGURED DEVICE.
+		 *
+		 * The IR capture value carries DONE at bit 5 -- this function
+		 * already decodes it that way for the closing status shift below.
+		 * DONE low means no configuration has completed, so there is no
+		 * static design for this partial to be loaded alongside and none
+		 * of the frames it addresses have meaning.  Shifting it in would
+		 * leave the device in a state that is neither configured nor
+		 * cleanly unconfigured, and the loader would report success.
+		 *
+		 * This costs one IR shift and it is the only one of the five
+		 * refusals that cannot be decided from the command line.
+		 */
+		_jtag->shiftIR(tx_buf, rx_buf, _irlen);
+		printf("Pre-load IR capture %02x (DONE %d)\n", rx_buf[0],
+			(rx_buf[0] >> 5) & 0x01);
+		if (!((rx_buf[0] >> 5) & 0x01))
+			throw std::runtime_error("--partial refused: DONE is low, the "
+				"device is not configured. A partial bitstream must be "
+				"loaded into a running design; load a full bitstream first.");
+	}
+
 	if (!_partial) {
 		/*
 		 * 2: Move into the RTI state.                        X     0   1
