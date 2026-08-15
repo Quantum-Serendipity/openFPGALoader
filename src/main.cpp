@@ -6,6 +6,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <cstdlib>
+
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -136,6 +138,12 @@ struct arguments {
 	 * positionally aggregate-initialised, so inserting a field anywhere else
 	 * silently shifts every initialiser after it onto the wrong member. */
 	bool partial;   /* Xilinx 7-series only: load a partial bitstream */
+	/* Xilinx 7-series only: --readback-frames <FAR>:<count>, and the two files
+	 * it needs.  Appended after `partial` for the same positional-aggregate
+	 * reason recorded above. */
+	std::string readback_frames;
+	std::string readback_out;
+	std::string readback_far_list;
 };
 
 int run_xvc_server(const struct arguments &args, const cable_t &cable,
@@ -148,6 +156,46 @@ int spi_comm(struct arguments args, const cable_t &cable,
 
 int parse_opt(int argc, char **argv, struct arguments *args,
 	jtag_pins_conf_t *pins_config);
+
+/* ONE definition of what `--readback-frames <FAR>:<count>` means, called from
+ * parse_opt (to refuse a malformed spec before a cable is opened) and from
+ * main (to get the numbers).  Written once rather than twice on purpose: two
+ * parsers of one string is how a refusal and the thing it refuses drift apart.
+ * Returns false and fills `err` on any malformed input. */
+static bool parse_readback_spec(const std::string &spec, uint32_t *far,
+	uint32_t *count, std::string *err)
+{
+	const size_t colon = spec.find(':');
+	if (colon == std::string::npos || colon == 0 || colon + 1 >= spec.size()) {
+		*err = "expected <FAR>:<count>, got '" + spec + "'";
+		return false;
+	}
+	const std::string a = spec.substr(0, colon), b = spec.substr(colon + 1);
+	char *end = NULL;
+	const unsigned long fa = strtoul(a.c_str(), &end, 0);
+	if (end == a.c_str() || *end != '\0') {
+		*err = "'" + a + "' is not a frame address";
+		return false;
+	}
+	end = NULL;
+	const unsigned long ct = strtoul(b.c_str(), &end, 0);
+	if (end == b.c_str() || *end != '\0') {
+		*err = "'" + b + "' is not a frame count";
+		return false;
+	}
+	if (ct == 0) {
+		*err = "a count of zero frames reads nothing, and an empty dump "
+			"compares equal to any other empty dump";
+		return false;
+	}
+	if (fa > 0xFFFFFFFFul || ct > 0xFFFFFFFFul) {
+		*err = "frame address or count does not fit in 32 bits";
+		return false;
+	}
+	*far = static_cast<uint32_t>(fa);
+	*count = static_cast<uint32_t>(ct);
+	return true;
+}
 
 void displaySupported(const struct arguments &args);
 
@@ -177,7 +225,8 @@ int main(int argc, char **argv)
 			"", false, {},  // mcufw conmcu, user_misc_dev_list
 			false, false, "", // read_dna, read_xadc, read_register
 			"", // user_flash
-			false // partial
+			false, // partial
+			"", "", ""  // readback_frames, readback_out, readback_far_list
 	};
 	/* parse arguments */
 	int ret = parse_opt(argc, argv, &args, &pins_config);
@@ -544,13 +593,20 @@ int main(int argc, char **argv)
 
 
 	Device *fpga;
+#ifdef ENABLE_XILINX_SUPPORT
+	/* Kept beside `fpga` rather than recovered with a dynamic_cast later:
+	 * --readback-frames is Xilinx-specific and RTTI is not otherwise relied on
+	 * anywhere in this file. */
+	Xilinx *xilinx_fpga = NULL;
+#endif
 	try {
 		if (fab == "xilinx") {
 #ifdef ENABLE_XILINX_SUPPORT
-			fpga = new Xilinx(jtag, args.bit_file, args.secondary_bit_file,
+			xilinx_fpga = new Xilinx(jtag, args.bit_file, args.secondary_bit_file,
 				args.file_type, args.prg_type, args.fpga_part, args.spi_flash_type, args.bridge_path,
 				args.target_flash, args.verify, args.verbose, args.skip_load_bridge, args.skip_reset,
 				args.read_dna, args.read_xadc, args.partial);
+			fpga = xilinx_fpga;
 #else
 			printError("Support for Xilinx FPGAs was not enabled at compile time");
 			delete(jtag);
@@ -644,6 +700,45 @@ int main(int argc, char **argv)
 	/* read internal register */
 	if (!args.read_register.empty()) {
 		fpga->read_register(args.read_register);
+	}
+
+	/* read configuration frames back out of a running device (Unit H14).
+	 * Placed after read_register and before every flash action for the same
+	 * reason the refusals in parse_opt exist: this is a READ, and it must not
+	 * end up sharing an invocation with a write. */
+	if (!args.readback_frames.empty()) {
+#ifdef ENABLE_XILINX_SUPPORT
+		if (xilinx_fpga == NULL) {
+			printError("Error: --readback-frames is a Xilinx 7-series feature "
+				"and the device on the chain is not a Xilinx FPGA");
+			delete(fpga);
+			delete(jtag);
+			return EXIT_FAILURE;
+		}
+		uint32_t rb_far = 0, rb_count = 0;
+		std::string why;
+		if (!parse_readback_spec(args.readback_frames, &rb_far, &rb_count,
+				&why)) {
+			printError("Error: --readback-frames " + why);
+			delete(fpga);
+			delete(jtag);
+			return EXIT_FAILURE;
+		}
+		try {
+			xilinx_fpga->readbackFrames(rb_far, rb_count, args.readback_out,
+				args.readback_far_list);
+		} catch (std::exception &e) {
+			printError("Error: " + std::string(e.what()));
+			delete(fpga);
+			delete(jtag);
+			return EXIT_FAILURE;
+		}
+#else
+		printError("Support for Xilinx FPGAs was not enabled at compile time");
+		delete(fpga);
+		delete(jtag);
+		return EXIT_FAILURE;
+#endif
 	}
 
 	/* unprotect SPI flash */
@@ -1075,6 +1170,16 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			("partial", "load a PARTIAL bitstream into a running device: "
 				"no JPROGRAM, no JSTART (Xilinx 7-series, --write-sram only)",
 				cxxopts::value<bool>(args->partial))
+			("readback-frames", "read configuration frames out of a RUNNING "
+				"device through FDRO: <FAR>:<count> (Xilinx 7-series)",
+				cxxopts::value<std::string>(args->readback_frames))
+			("readback-out", "file the --readback-frames dump is written to, "
+				"in `bitread -o` format",
+				cxxopts::value<std::string>(args->readback_out))
+			("readback-far-list", "ordered frame addresses of the part, one "
+				"per line; required by --readback-frames for more than one "
+				"frame",
+				cxxopts::value<std::string>(args->readback_far_list))
 			("V,version", "Print program version")
 			("Version", "Print program version (Deprecated)");
 
@@ -1224,6 +1329,82 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			}
 		}
 
+		/* --------------------------------------------------------------
+		 * --readback-frames refusals.
+		 *
+		 * A readback is a READ of a device that is already configured and
+		 * running.  Nothing it does is destructive by itself, so every
+		 * refusal here is about the company it keeps: an argv that reads
+		 * frames AND writes configuration in one invocation is
+		 * indistinguishable, to every screen that inspects an argv, from a
+		 * load -- and the frames it then reports are the frames of whatever
+		 * it just wrote, not of the design somebody meant to measure.
+		 * -------------------------------------------------------------- */
+		if (!args->readback_frames.empty()) {
+			uint32_t rb_far = 0, rb_count = 0;
+			std::string why;
+			/* 1. a malformed spec, decided before a cable is opened. */
+			if (!parse_readback_spec(args->readback_frames, &rb_far,
+					&rb_count, &why)) {
+				printError("Error: --readback-frames " + why);
+				return -1;
+			}
+			/* 2. --readback-frames with a WRITE mode.  -m/--write-sram would
+			 * shift a bitstream in (and, without --partial, JPROGRAM first)
+			 * and the readback would then measure the loader's own work.
+			 * --write-flash and --dump-flash touch non-volatile memory, which
+			 * this feature has no business being in the same command as. */
+			if (args->prg_type == Device::WR_SRAM) {
+				printError("Error: --readback-frames cannot be combined with "
+					"-m/--write-sram: the readback would measure the frames "
+					"this same invocation just wrote, not the ones that were "
+					"there. Read first, then load, in two commands");
+				return -1;
+			}
+			if (args->prg_type == Device::WR_FLASH ||
+					args->prg_type == Device::RD_FLASH) {
+				printError("Error: --readback-frames cannot be combined with "
+					"--write-flash/--external-flash/--dump-flash: a frame "
+					"readback is an SRAM-side read and has nothing to do with "
+					"non-volatile memory");
+				return -1;
+			}
+			/* 3. --readback-frames with -r/--reset.  Xilinx::reset() is
+			 * JSHUTDOWN followed by JPROGRAM and runs at the end of main(), so
+			 * the combination reads the frames correctly and then clears the
+			 * configuration memory they came from, at exit code 0. */
+			if (args->reset) {
+				printError("Error: --readback-frames cannot be combined with "
+					"-r/--reset: reset is JSHUTDOWN+JPROGRAM and would clear "
+					"the configuration memory that was just read");
+				return -1;
+			}
+			/* 4. nowhere to put the answer.  Refused rather than defaulted:
+			 * a readback that writes to a guessed path is a readback whose
+			 * output somebody else's run will overwrite. */
+			if (args->readback_out.empty()) {
+				printError("Error: --readback-frames needs --readback-out "
+					"<file>");
+				return -1;
+			}
+			/* 5. more than one frame without the part's frame address order.
+			 * See Xilinx::readbackFrames(): consecutive frames do not carry
+			 * consecutive FARs. */
+			if (rb_count > 1 && args->readback_far_list.empty()) {
+				printError("Error: --readback-frames needs "
+					"--readback-far-list for more than one frame: consecutive "
+					"frames do not carry consecutive frame addresses, so "
+					"labelling frame i with FAR+i is wrong after the first "
+					"column boundary");
+				return -1;
+			}
+		} else if (!args->readback_out.empty() ||
+				!args->readback_far_list.empty()) {
+			printError("Error: --readback-out/--readback-far-list mean "
+				"nothing without --readback-frames");
+			return -1;
+		}
+
 		if (result.count("freq")) {
 			double freq;
 			if (parse_eng(freqo, &freq)) {
@@ -1351,6 +1532,12 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			!args->conmcu &&
 			!args->read_dna &&
 			!args->read_xadc &&
+			/* --readback-frames is an ACTION WITHOUT A BITSTREAM, like
+			 * --read-register and --read-dna: it reads the device that is
+			 * already configured.  Without this line the feature is
+			 * unreachable except beside a bitfile, which is exactly the
+			 * combination its own refusals above forbid. */
+			args->readback_frames.empty() &&
 			args->read_register.empty()) {
 			printError("Error: bitfile not specified");
 			std::cout << options.help() << std::endl;
