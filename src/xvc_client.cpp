@@ -36,7 +36,13 @@ XVC_client::XVC_client(const std::string &ip_addr, int port,
 		throw std::runtime_error("connection failure");
 
 	uint8_t buffer[2048];
-	if (xfer_pkt("getinfo:", NULL, 0, buffer, 2048) <= 0)
+	/* sizeof(buffer) - 1, not sizeof(buffer): the reply is consumed below as a
+	 * C string, so one byte has to stay available for the terminator xfer_pkt
+	 * writes.  Asking for the full 2048 would let a server fill the array
+	 * exactly, leaving nothing to terminate it with and sending the
+	 * std::string constructor past the end.
+	 */
+	if (xfer_pkt("getinfo:", NULL, 0, buffer, sizeof(buffer) - 1) <= 0)
 		throw std::runtime_error("can't read info");
 
 	std::regex r("[_:]");
@@ -305,7 +311,37 @@ ssize_t XVC_client::xfer_pkt(const std::string &instr,
 		} else if (len == 0) {
 			fprintf(stderr, "Client orderly shut down the connection.\n");
 		}
-		rx[len] = '\0';
+		/* ONE-BYTE HEAP OVERFLOW, GUARDED.
+		 *
+		 * This was `rx[len] = '\0';` unconditionally, and still is upstream
+		 * (trabucayre/master src/xvc_client.cpp:308).  One reachable way it
+		 * writes outside `rx`:
+		 *
+		 *   len == rx_size  ->  rx[rx_size], one past the end.  Not a corner
+		 *     case: ll_write() calls this as
+		 *       xfer_pkt("shift:", _xfer_buf, 2*numbytes + 4, _tditdo, numbytes)
+		 *     and _tditdo is exactly _buffer_size bytes (allocated in the
+		 *     constructor above), while writeTDI fills and flushes at
+		 *     _num_bits == _buffer_size * 8.  So every maximally-sized transfer
+		 *     -- which is every toggleClk burst and most of a bitstream load --
+		 *     writes one byte past a 1024-byte heap allocation.  It has not
+		 *     crashed because glibc's usable chunk for a 1024-byte malloc is
+		 *     larger than 1024 and the byte lands in slack.  That is luck.
+		 *
+		 * A second way, `len < 0 -> rx[-1]`, was reachable at v1.1.1 and is NOT
+		 * reachable here.  Upstream's 4af13b9 added the `return len;` at line
+		 * 310 above, so a recv() error now leaves xfer_pkt() before reaching
+		 * this statement.  The `len >= 0` half of the guard below is defence
+		 * against that early return being removed again, not a live fix.
+		 *
+		 * The terminator exists for the two text replies (getinfo:, settck:),
+		 * which are far shorter than their buffers.  The binary TDO reply never
+		 * needs it: ll_write() memcpy's exactly `numbytes` and reads no
+		 * terminator.  So terminating only when the reply left room is
+		 * behaviour-preserving for every caller in the tree.
+		 */
+		if (len >= 0 && static_cast<uint32_t>(len) < rx_size)
+			rx[len] = '\0';
 		if (_verbose) {
 			printInfo("received " + std::to_string(len) + " Bytes (" +
 					std::to_string(len * 8) + ")");
