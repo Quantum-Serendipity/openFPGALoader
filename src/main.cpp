@@ -1163,6 +1163,67 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			}
 		}
 
+		/* --------------------------------------------------------------
+		 * --partial refusals.
+		 *
+		 * A partial bitstream is written into a device that is ALREADY
+		 * CONFIGURED AND RUNNING, alongside a static design that must
+		 * survive the load.  Every refusal below names a way to lose that
+		 * static, and each is a way the flag would otherwise appear to
+		 * work: nothing here fails loudly on hardware, it fails by
+		 * erasing something and returning success.
+		 * -------------------------------------------------------------- */
+		if (args->partial) {
+			/* 1. --partial with --write-flash.  A partial has no meaning
+			 * in a flash image: the device boots the whole flash contents
+			 * as a full configuration, so the "partial" would be written
+			 * as if it were a complete bitstream. */
+			if (result.count("write-flash") || result.count("external-flash")) {
+				printError("Error: --partial cannot be combined with "
+					"--write-flash: a partial bitstream is written into a "
+					"running device, not stored as a boot image");
+				return -1;
+			}
+			/* 2. --partial without --write-sram.  Deliberately requires the
+			 * flag EXPLICITLY rather than accepting the WR_SRAM default
+			 * applied later in main(): --partial is the one option in this
+			 * tool whose misuse destroys a working design, so the mode it
+			 * needs is stated, not inferred. */
+			if (args->prg_type != Device::WR_SRAM) {
+				printError("Error: --partial requires -m/--write-sram");
+				return -1;
+			}
+			/* 3. --partial with -r/--reset.  Xilinx::reset() is JSHUTDOWN
+			 * followed by JPROGRAM (src/xilinx.cpp:545-546).  It runs after
+			 * a successful load, so the combination loads the partial
+			 * correctly and then clears the configuration memory it was
+			 * just written into -- the exact damage --partial exists to
+			 * prevent, arriving at exit code 0. */
+			if (args->reset) {
+				printError("Error: --partial cannot be combined with "
+					"-r/--reset: reset is JSHUTDOWN+JPROGRAM and would "
+					"clear the configuration the partial was loaded into");
+				return -1;
+			}
+			/* 4. --partial on a file that is not a .bit or .bin.  Any other
+			 * extension selects a different Device::mode in the Xilinx
+			 * constructor -- mcs and jed do not reach program_mem() at all,
+			 * pdi reaches it and then takes the PDI arm, which is neither
+			 * guarded block.  --partial would be silently inert. */
+			string t = args->file_type;
+			if (t.empty()) {
+				size_t dot = args->bit_file.rfind('.');
+				if (dot != string::npos)
+					t = args->bit_file.substr(dot + 1);
+			}
+			if (t != "bit" && t != "bin") {
+				printError("Error: --partial needs a .bit or .bin file "
+					"(got file type '" + (t.empty() ? string("<none>") : t) +
+					"'); use --file-type to override the extension");
+				return -1;
+			}
+		}
+
 		if (result.count("freq")) {
 			double freq;
 			if (parse_eng(freqo, &freq)) {
