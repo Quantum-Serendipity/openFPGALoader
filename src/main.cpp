@@ -132,6 +132,10 @@ struct arguments {
 	bool read_xadc;
 	std::string read_register;
 	std::string user_flash;
+	/* Appended at the END of this struct on purpose: `args` below is
+	 * positionally aggregate-initialised, so inserting a field anywhere else
+	 * silently shifts every initialiser after it onto the wrong member. */
+	bool partial;   /* Xilinx 7-series only: load a partial bitstream */
 };
 
 int run_xvc_server(const struct arguments &args, const cable_t &cable,
@@ -172,7 +176,8 @@ int main(int argc, char **argv)
 			false, 3721, "-",
 			"", false, {},  // mcufw conmcu, user_misc_dev_list
 			false, false, "", // read_dna, read_xadc, read_register
-			"" // user_flash
+			"", // user_flash
+			false // partial
 	};
 	/* parse arguments */
 	int ret = parse_opt(argc, argv, &args, &pins_config);
@@ -545,7 +550,7 @@ int main(int argc, char **argv)
 			fpga = new Xilinx(jtag, args.bit_file, args.secondary_bit_file,
 				args.file_type, args.prg_type, args.fpga_part, args.spi_flash_type, args.bridge_path,
 				args.target_flash, args.verify, args.verbose, args.skip_load_bridge, args.skip_reset,
-				args.read_dna, args.read_xadc);
+				args.read_dna, args.read_xadc, args.partial);
 #else
 			printError("Support for Xilinx FPGAs was not enabled at compile time");
 			delete(jtag);
@@ -1067,6 +1072,9 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 				cxxopts::value<std::string>(args->read_register))
 			("user-flash", "User flash file (Gowin LittleBee FPGA only)",
 				cxxopts::value<std::string>(args->user_flash))
+			("partial", "load a PARTIAL bitstream into a running device: "
+				"no JPROGRAM, no JSTART (Xilinx 7-series, --write-sram only)",
+				cxxopts::value<bool>(args->partial))
 			("V,version", "Print program version")
 			("Version", "Print program version (Deprecated)");
 
