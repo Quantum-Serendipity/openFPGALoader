@@ -85,7 +85,7 @@ Gowin:
     Flash: EF
 
 
-Intel:
+Altera:
 
   - Description: Max II(CPLD)
     Model: EPM240T100C5N
@@ -158,9 +158,24 @@ Intel:
       - 10M08
       - 10M16
       - 10M25
+      - 10M50
     URL: https://www.intel.fr/content/www/fr/fr/products/details/fpga/max/10.html
     Memory: SVF
     Flash: POF
+
+  - Description: Agilex 3
+    Model:
+      - A3CZ135
+    URL: https://www.altera.com/products/fpga/agilex/3
+    Memory: RBF
+    Flash: NT
+
+  - Description: Agilex 5
+    Model:
+      - A5EC008B
+    URL: https://www.altera.com/products/fpga/agilex/5
+    Memory: RBF
+    Flash: NT
 
 
 Lattice:
@@ -319,6 +334,14 @@ Xilinx:
     URL: https://www.xilinx.com/products/silicon-devices/fpga/kintex-ultrascale-plus.html#productTable
     Memory: OK
     Flash: OK
+
+  - Description: Kria
+    Model:
+      - xck24
+      - xck26
+    URL: https://docs.amd.com/v/u/en-US/kria-som-psg
+    Memory: OK
+    Flash: NA
 
   - Description: Virtex 6
     Model:

@@ -40,7 +40,9 @@ option(ENABLE_ANLOGIC_CABLE    "enable Anlogic cable (requires libUSB)"       ${
 option(ENABLE_CH347            "enable CH347 cable (requires libUSB)"         ${ENABLE_CABLE_ALL})
 # CMSIS-DAP requires hidapi which is complex to cross-compile, disable by default for cross-compilation
 if (NOT WINDOWS_CROSSCOMPILE)
-	option(ENABLE_CMSISDAP     "enable cmsis DAP interface (requires hidapi)" ${ENABLE_CABLE_ALL})
+	option(ENABLE_CMSISDAP     "enable cmsis DAP interface (v1 and v2)"       ${ENABLE_CABLE_ALL})
+	option(ENABLE_CMSISDAP_V1  "enable cmsis DAP interface v1 (requires hidapi)" ${ENABLE_CMSISDAP})
+	option(ENABLE_CMSISDAP_V2  "enable cmsis DAP interface v2 (requires libusb)" ${ENABLE_CMSISDAP})
 else()
 	option(ENABLE_CMSISDAP     "enable cmsis DAP interface (requires hidapi)" OFF)
 endif()
@@ -56,6 +58,7 @@ option(ENABLE_USB_BLASTERII    "enable Altera USB Blaster II support"         ${
 
 set(BLASTERII_PATH           "" CACHE STRING "usbBlasterII firmware directory")
 set(ISE_PATH "/opt/Xilinx/14.7" CACHE STRING "ise root directory (default: /opt/Xilinx/14.7)")
+set(VIVADO_PATH              "" CACHE STRING "Vivado root directory (something like /opt/Xilinx/Vivado/VERSION)")
 
 # Libgpiod is only available on Linux OS.
 if (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
@@ -63,6 +66,8 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
 else()
 	set(ENABLE_LIBGPIOD OFF)
 endif()
+
+option(ENABLE_XILINX_PLATFORM_CABLE_USB "enable Xilinx Platform Cable USB (XPCU) support" ${ENABLE_CABLE_ALL})
 
 # XVC and RemoteBitbang are not available on Windows OS.
 if (NOT ${CMAKE_SYSTEM_NAME} MATCHES "Windows")
@@ -102,6 +107,11 @@ set(USE_LIBFTDI   OFF)
 set(USE_LIBUSB    OFF)
 set(USE_LIBUSB_LL OFF)
 
+# USB BlasterII and Xilinx Platform Cable USB requires FX2 driver
+if (ENABLE_XILINX_PLATFORM_CABLE_USB OR ENABLE_USB_BLASTERII)
+	set(USE_FX2_LL ON)
+endif()
+
 # Only adds libftdi as dependency when a cable
 # need this library.
 if (ENABLE_FTDI_BASED_CABLE OR ENABLE_USB_BLASTERI OR ENABLE_XILINX_VIRTUAL_CABLE_SERVER)
@@ -112,17 +122,13 @@ endif(ENABLE_FTDI_BASED_CABLE OR ENABLE_USB_BLASTERI OR ENABLE_XILINX_VIRTUAL_CA
 
 # Only adds libusb as dependency when a cable need this library
 if (ENABLE_DFU OR ENABLE_ANLOGIC_CABLE OR ENABLE_CH347 OR ENABLE_DIRTYJTAG
-		OR ENABLE_ESP_USB OR ENABLE_JLINK OR ENABLE_GOWIN_GWU2X OR ENABLE_USB_BLASTERII OR ENABLE_USB_SCAN)
+		OR ENABLE_ESP_USB OR ENABLE_JLINK OR ENABLE_GOWIN_GWU2X OR USE_FX2_LL OR ENABLE_USB_SCAN
+		OR ENABLE_CMSISDAP_V2)
 	set(USE_LIBUSB ON)
 endif()
 
 if (ENABLE_USB_SCAN OR ENABLE_GOWIN_GWU2X)
 	set(USE_LIBUSB_LL ON)
-endif()
-
-# Only enable fx2_ll when cable using it
-if (ENABLE_USB_BLASTERII)
-	set(USE_FX2_LL ON)
 endif()
 
 ####################################################################################################
@@ -162,7 +168,7 @@ endif()
 ####################################################################################################
 
 ## specify the C++ standard
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_FLAGS_DEBUG "-g -Wall -Wextra ${CMAKE_CXX_FLAGS_DEBUG}")
 if(ENABLE_OPTIM AND NOT(CMAKE_BUILD_TYPE STREQUAL "Debug"))
@@ -179,15 +185,11 @@ include(GNUInstallDirs)
 add_definitions(-DDATA_DIR=\"${CMAKE_INSTALL_FULL_DATAROOTDIR}\")
 
 add_definitions(-DISE_DIR=\"${ISE_PATH}\")
+add_definitions(-DVIVADO_DIR=\"${VIVADO_PATH}\")
 
 ####################################################################################################
 # Dependencies check/search
 ####################################################################################################
-
-if (USE_LIBFTDI)
-	# Try to find the LibFTDI1 with cmake
-	find_package(LibFTDI1 QUIET)
-endif()
 
 if (USE_PKGCONFIG)
 	find_package(PkgConfig REQUIRED)
@@ -195,12 +197,11 @@ if (USE_PKGCONFIG)
 	# Backward compat when the libftdi is not found
 	# by using cmake
 	if (USE_LIBFTDI)
-		if (NOT LIBFTDI_FOUND)
-			pkg_check_modules(LIBFTDI REQUIRED libftdi1)
-			string(REPLACE "." ";" VERSION_LIST ${LIBFTDI_VERSION})
-			list(GET VERSION_LIST 0 LIBFTDI_VERSION_MAJOR)
-			list(GET VERSION_LIST 1 LIBFTDI_VERSION_MINOR)
-		endif()
+		pkg_check_modules(LIBFTDI REQUIRED libftdi1)
+		string(REPLACE "." ";" VERSION_LIST ${LIBFTDI_VERSION})
+		list(GET VERSION_LIST 0 LIBFTDI_VERSION_MAJOR)
+		list(GET VERSION_LIST 1 LIBFTDI_VERSION_MINOR)
+		string(REGEX REPLACE "[^0-9].*" "" LIBFTDI_VERSION_MINOR "${LIBFTDI_VERSION_MINOR}")
 	else()
 		set(LIBFTDI_LIBRARY_DIRS "")
 		set(LIBFTDI_INCLUDE_DIRS "")
@@ -215,7 +216,7 @@ if (USE_PKGCONFIG)
 		set(LIBUSB_LIBRARIES    "")
 	endif(USE_LIBUSB)
 
-	if(ENABLE_CMSISDAP)
+	if(ENABLE_CMSISDAP_V1)
 		pkg_check_modules(HIDAPI hidapi-libusb)
 		# if libusb not found try with hidraw
 		if (NOT HIDAPI_FOUND)
@@ -337,8 +338,7 @@ endif()
 list(APPEND OPENFPGALOADER_SOURCE
 	src/bpiFlash.cpp
 	src/spiFlash.cpp
-	src/spiInterface.cpp
-	src/epcq.cpp
+	src/flashInterface.cpp
 	src/jtag.cpp
 )
 
@@ -348,8 +348,7 @@ list(APPEND OPENFPGALOADER_HEADERS
 	src/jtagInterface.hpp
 	src/spiFlash.hpp
 	src/spiFlashdb.hpp
-	src/epcq.hpp
-	src/spiInterface.hpp
+	src/flashInterface.hpp
 )
 
 # FTDI Based cables
@@ -592,6 +591,12 @@ list (APPEND OPENFPGALOADER_HEADERS src/svf_jtag.hpp)
 add_definitions(-DENABLE_SVF_JTAG)
 endif()
 
+# Xilinx Platform Cable USB
+if (ENABLE_XILINX_PLATFORM_CABLE_USB)
+	list(APPEND OPENFPGALOADER_SOURCE  src/xilinxPlatformCableUSB.cpp)
+	list(APPEND OPENFPGALOADER_HEADERS src/xilinxPlatformCableUSB.hpp)
+endif()
+
 # Xilinx Virtual Cable
 if (ENABLE_XILINX_VIRTUAL_CABLE_CLIENT)
 list (APPEND OPENFPGALOADER_SOURCE  src/xvc_client.cpp)
@@ -628,7 +633,7 @@ if (ENABLE_LIBGPIOD)
 	link_directories(${LIBGPIOD_LIBRARY_DIRS})
 endif()
 
-if (ENABLE_CMSISDAP AND HIDAPI_FOUND)
+if (ENABLE_CMSISDAP_V1 AND HIDAPI_FOUND)
 	link_directories(${HIDAPI_LIBRARY_DIRS})
 endif()
 
@@ -675,10 +680,6 @@ if (ENABLE_UDEV)
 	target_link_libraries(openFPGALoader ${LIBUDEV_LIBRARIES})
 endif()
 
-if (ENABLE_UDEV OR ENABLE_LIBGPIOD OR ENABLE_JETSONNANOGPIO)
-	add_definitions(-DUSE_DEVICE_ARG)
-endif(ENABLE_UDEV OR ENABLE_LIBGPIOD OR ENABLE_JETSONNANOGPIO)
-
 if (BUILD_STATIC)
 	set_target_properties(openFPGALoader PROPERTIES LINK_SEARCH_END_STATIC 1)
 endif()
@@ -699,18 +700,34 @@ else()
 	message("CH347 support disabled")
 endif()
 
-if (ENABLE_CMSISDAP)
+# CMSIS DAP
+if (ENABLE_CMSISDAP_V1)
 	if (HIDAPI_FOUND)
 		include_directories(${HIDAPI_INCLUDE_DIRS})
 		target_link_libraries(openFPGALoader ${HIDAPI_LIBRARIES})
-		add_definitions(-DENABLE_CMSISDAP=1)
-		target_sources(openFPGALoader PRIVATE src/cmsisDAP.cpp)
-		list (APPEND OPENFPGALOADER_HEADERS src/cmsisDAP.hpp)
-		message("cmsis_dap support enabled")
+		add_definitions(-DENABLE_CMSISDAP_V1=1)
+		message("cmsis_dap v1 support enabled")
 	else()
-		message("hidapi-libusb not found: cmsis_dap support disabled")
+		set(ENABLE_CMSISDAP_V1 OFF)
+		message("hidapi-libusb not found: cmsis_dap v1 support disabled")
 	endif()
-endif(ENABLE_CMSISDAP)
+endif(ENABLE_CMSISDAP_V1)
+if (NOT ENABLE_CMSISDAP_V1)
+	message("cmsis_dap v1 support disabled")
+endif()
+
+if (ENABLE_CMSISDAP_V2)
+	add_definitions(-DENABLE_CMSISDAP_V2=1)
+	message("cmsis_dap v2 support enabled")
+else()
+	message("cmsis_dap v2 support disabled")
+endif (ENABLE_CMSISDAP_V2)
+
+if (ENABLE_CMSISDAP OR ENABLE_CMSISDAP_V1 OR ENABLE_CMSISDAP_V2)
+	add_definitions(-DENABLE_CMSISDAP=1)
+	target_sources(openFPGALoader PRIVATE src/cmsisDAP.cpp)
+	list (APPEND OPENFPGALOADER_HEADERS src/cmsisDAP.hpp)
+endif()
 
 # DFU
 if (ENABLE_DFU)
@@ -778,6 +795,13 @@ else()
 	message("Remote bitbang client support disabled")
 endif()
 
+if (ENABLE_XILINX_PLATFORM_CABLE_USB)
+	add_definitions(-DENABLE_XILINX_PLATFORM_CABLE_USB=1)
+	message("Xilinx Platform Cable USB (XPCU) support enabled")
+else()
+	message("Xilinx Platform Cable USB (XCPU) support disabled")
+endif()
+
 if (ENABLE_XILINX_VIRTUAL_CABLE_CLIENT)
 	add_definitions(-DENABLE_XVC_CLIENT=1)
 	set(CMAKE_EXE_LINKER_FLAGS "-pthread ${CMAKE_EXE_LINKER_FLAGS}")
@@ -805,6 +829,7 @@ if (ZLIB_FOUND)
 	add_definitions(-DHAS_ZLIB=1)
 else()
 	message("zlib library not found: can't flash intel/altera devices")
+	message("or reads compressed bitstreams")
 endif()
 
 if (LINK_CMAKE_THREADS)
@@ -818,7 +843,6 @@ if (USE_LIBFTDI)
 	math(EXPR FTDI_VAL "${LIBFTDI_VERSION_MAJOR} * 100 + ${LIBFTDI_VERSION_MINOR}")
 	add_definitions(-DFTDI_VERSION=${FTDI_VAL})
 endif()
-
 
 install(TARGETS openFPGALoader DESTINATION bin)
 

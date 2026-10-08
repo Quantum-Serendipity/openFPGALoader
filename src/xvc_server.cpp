@@ -6,6 +6,7 @@
 #include "xvc_server.hpp"
 
 #include <arpa/inet.h>
+#include <sys/socket.h>
 #include <errno.h>
 #include <netinet/tcp.h>
 #include <unistd.h>
@@ -20,16 +21,15 @@
 #include "cable.hpp"
 #include "display.hpp"
 
-using namespace std;
 
 XVC_server::XVC_server(int port, const cable_t & cable,
-	const jtag_pins_conf_t * pin_conf, string dev,
-	const string & serial, uint32_t clkHZ, int8_t verbose,
-	const string & ip_adr, const bool invert_read_edge,
-	const string & firmware_path):_verbose(verbose > 1),
+	const jtag_pins_conf_t * pin_conf, std::string dev,
+	const std::string & serial, uint32_t clkHZ, int8_t verbose,
+	const std::string & ip_adr, const bool invert_read_edge,
+	const std::string & firmware_path):_verbose(verbose > 1),
 			_jtag(NULL), _port(port), _sock(-1),
 			_is_stopped(false), _must_stop(false),
-			_buffer_size(2048), _state(Jtag::RUN_TEST_IDLE)
+			_buffer_size(1048576), _state(Jtag::RUN_TEST_IDLE)
 {
 	(void)pin_conf;
 	(void)ip_adr;
@@ -282,7 +282,7 @@ int XVC_server::handle_data(int fd)
 			if (_verbose) {
 				printInfo(std::to_string((int)time(NULL)) +
 							" : Received command: 'getinfo'");
-				printInfo("\t Replied with " + string(xvcInfo));
+				printInfo("\t Replied with " + std::string(xvcInfo));
 			}
 			break;
 		/* settck */
@@ -329,7 +329,7 @@ int XVC_server::handle_data(int fd)
 						" : Received command: 'shift'");
 			}
 		} else {
-			printError("invalid cmd '" + string(cmd) + "'");
+			printError("invalid cmd '" + std::string(cmd) + "'");
 			return 1;
 		}
 

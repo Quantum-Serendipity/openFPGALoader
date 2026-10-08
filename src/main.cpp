@@ -56,8 +56,12 @@
 #endif
 #include "jtag.hpp"
 #include "part.hpp"
+#include "progressBar.hpp"
 #include "spiFlash.hpp"
 #include "rawParser.hpp"
+#ifdef ENABLE_USBBLASTER
+#include "usbBlaster.hpp"
+#endif
 #ifdef ENABLE_XILINX_SUPPORT
 #include "xilinx.hpp"
 #endif
@@ -70,22 +74,22 @@
 
 #define DEFAULT_FREQ 	6000000
 
-using namespace std;
 
 struct arguments {
 	int8_t verbose;
+	bool force_terminal_mode;
 	bool reset, detect, detect_flash, verify, scan_usb;
 	unsigned int offset;
-	string bit_file;
-	string secondary_bit_file;
-	string device;
-	string cable;
-	string ftdi_serial;
+	std::string bit_file;
+	std::string secondary_bit_file;
+	std::string device;
+	std::string cable;
+	std::string usb_serial_num;
 	int ftdi_channel;
 	int status_pin;
 	uint32_t freq;
 	bool invert_read_edge;
-	string board;
+	std::string board;
 	bool pin_config;
 	bool list_cables;
 	bool list_boards;
@@ -94,13 +98,14 @@ struct arguments {
 	bool is_list_command;
 	bool spi;
 	bool dfu;
-	string file_type;
-	string fpga_part;
-	string bridge_path;
-	string probe_firmware;
+	bool passive_serial;
+	std::string file_type;
+	std::string fpga_part;
+	std::string bridge_path;
+	std::string probe_firmware;
 	int index_chain;
 	unsigned int file_size;
-	string target_flash;
+	std::string target_flash;
 	bool external_flash;
 	bool spi_flash_type;
 	int16_t altsetting;
@@ -109,26 +114,26 @@ struct arguments {
 	int16_t cable_index;
 	uint8_t bus_addr;
 	uint8_t device_addr;
-	string ip_adr;
+	std::string ip_adr;
 	uint32_t protect_flash;
 	bool unprotect_flash;
 	bool enable_quad;
 	bool disable_quad;
 	bool bulk_erase_flash;
-	string flash_sector;
+	std::string flash_sector;
 	bool skip_load_bridge;
 	bool skip_reset;
 	/* xvc server */
 	bool xvc;
 	int port;
-	string interface;
-	string mcufw;
+	std::string interface;
+	std::string mcufw;
 	bool conmcu;
 	std::map<uint32_t, misc_device> user_misc_devs;
 	bool read_dna;
 	bool read_xadc;
-	string read_register;
-	string user_flash;
+	std::string read_register;
+	std::string user_flash;
 	/* Appended at the END of this struct on purpose: `args` below is
 	 * positionally aggregate-initialised, so inserting a field anywhere else
 	 * silently shifts every initialiser after it onto the wrong member. */
@@ -136,9 +141,9 @@ struct arguments {
 	/* Xilinx 7-series only: --readback-frames <FAR>:<count>, and the two files
 	 * it needs.  Appended after `partial` for the same positional-aggregate
 	 * reason recorded above. */
-	string readback_frames;
-	string readback_out;
-	string readback_far_list;
+	std::string readback_frames;
+	std::string readback_out;
+	std::string readback_far_list;
 };
 
 int run_xvc_server(const struct arguments &args, const cable_t &cable,
@@ -157,15 +162,15 @@ int parse_opt(int argc, char **argv, struct arguments *args,
  * main (to get the numbers).  Written once rather than twice on purpose: two
  * parsers of one string is how a refusal and the thing it refuses drift apart.
  * Returns false and fills `err` on any malformed input. */
-static bool parse_readback_spec(const string &spec, uint32_t *far,
-	uint32_t *count, string *err)
+static bool parse_readback_spec(const std::string &spec, uint32_t *far,
+	uint32_t *count, std::string *err)
 {
 	const size_t colon = spec.find(':');
-	if (colon == string::npos || colon == 0 || colon + 1 >= spec.size()) {
+	if (colon == std::string::npos || colon == 0 || colon + 1 >= spec.size()) {
 		*err = "expected <FAR>:<count>, got '" + spec + "'";
 		return false;
 	}
-	const string a = spec.substr(0, colon), b = spec.substr(colon + 1);
+	const std::string a = spec.substr(0, colon), b = spec.substr(colon + 1);
 	char *end = NULL;
 	const unsigned long fa = strtoul(a.c_str(), &end, 0);
 	if (end == a.c_str() || *end != '\0') {
@@ -201,13 +206,15 @@ int main(int argc, char **argv)
 	jtag_pins_conf_t pins_config = {0, 0, 0, 0, 0, 0};
 
 	/* command line args. */
-	struct arguments args = {0,
+	struct arguments args = {
+			/* verbose, force_terminal_mode */
+			0,          false,
 			//reset, detect, detect_flash, verify, scan_usb
 			false,   false,  false,        false,  false,
 			0, "", "", "", "-", "", -1,
 			-1, 0, false, "-", false, false, false, false, Device::PRG_NONE, false,
-			/* spi dfu    file_type fpga_part bridge_path probe_firmware */
-			false, false, "",       "",       "",         "",
+			/* spi dfu   passive_serial file_type fpga_part bridge_path probe_firmware */
+			false, false, false,          "",       "",       "",         "",
 			/* index_chain file_size target_flash external_flash spi_flash_type altsetting */
 			-1,            0,        "primary",   false,         true,          -1,
 			/* vid, pid, index bus_addr, device_addr */
@@ -226,15 +233,18 @@ int main(int argc, char **argv)
 	if (ret != 0)
 		return (ret == 1) ? EXIT_SUCCESS : EXIT_FAILURE;
 
+	if (args.force_terminal_mode)
+		ProgressBar::setForceTerminalMode();
+
 	if (args.is_list_command) {
 		displaySupported(args);
 		return EXIT_SUCCESS;
 	}
 
 	if (args.prg_type == Device::WR_SRAM)
-		cout << "write to ram" << endl;
+		std::cout << "write to ram" << std::endl;
 	if (args.prg_type == Device::WR_FLASH)
-		cout << "write to flash" << endl;
+		std::cout << "write to flash" << std::endl;
 
 	if (args.board[0] != '-') {
 		if (board_list.find(args.board) != board_list.end()) {
@@ -262,7 +272,7 @@ int main(int argc, char **argv)
 			if (args.cable[0] == '-') {  // no user selection
 				args.cable = (*t).first;  // use board default cable
 			} else {
-				cout << "Board default cable overridden with " << args.cable << endl;
+				std::cout << "Board default cable overridden with " << args.cable << std::endl;
 			}
 		}
 
@@ -312,13 +322,6 @@ int main(int argc, char **argv)
 		cable.config.interface = mapping[args.ftdi_channel];
 	}
 
-	if (!args.ftdi_serial.empty()) {
-		if (cable.type != MODE_FTDI_SERIAL && cable.type != MODE_FTDI_BITBANG){
-			printError("Error: FTDI serial param is for FTDI cables.");
-			return EXIT_FAILURE;
-		}
-	}
-
 	if (args.status_pin != -1) {
 		if (cable.type != MODE_FTDI_SERIAL){
 			printError("Error: FTDI status pin is for FTDI MPSSE cables.");
@@ -326,6 +329,14 @@ int main(int argc, char **argv)
 		}
 	}
 #endif
+
+	if (!args.usb_serial_num.empty()) {
+		if (cable.type != MODE_FTDI_SERIAL && cable.type != MODE_FTDI_BITBANG &&
+			cable.type != MODE_ESP){
+			printError("Error: usb-serial-num param is for FTDI and esp32s3 cables.");
+			return EXIT_FAILURE;
+		}
+	}
 
 	if (args.vid != 0) {
 		printInfo("Cable VID overridden");
@@ -343,16 +354,17 @@ int main(int argc, char **argv)
 	cable.config.index = args.cable_index;
 	cable.config.status_pin = args.status_pin;
 
-#ifdef USE_LIBFTDI
 	/* ----------------------- */
 	/* SPI FLASH direct access */
 	/* ----------------------- */
-	if (args.spi || (board && board->mode == COMM_SPI))
+	if (args.spi || (board && board->mode == COMM_SPI)) {
+#ifdef USE_LIBFTDI
 		return spi_comm(args, cable, &pins_config, board);
 #else
 		printError("SPI Flash Direct access: disabled at build time");
 		return EXIT_FAILURE;
 #endif
+	}
 
 	/* ------------------- */
 	/* DFU access          */
@@ -389,7 +401,7 @@ int main(int argc, char **argv)
 			dfu = new DFU(args.bit_file, args.detect, vid, pid, altsetting,
 					args.verbose);
 		} catch (std::exception &e) {
-			printError("DFU init failed with: " + string(e.what()));
+			printError("DFU init failed with: " + std::string(e.what()));
 			return EXIT_FAILURE;
 		}
 		/* if verbose or detect: display device */
@@ -403,7 +415,7 @@ int main(int argc, char **argv)
 		try {
 			dfu->download();
 		} catch (std::exception &e) {
-			printError("DFU download failed with: " + string(e.what()));
+			printError("DFU download failed with: " + std::string(e.what()));
 			return EXIT_FAILURE;
 		}
 
@@ -427,6 +439,36 @@ int main(int argc, char **argv)
 	}
 #endif
 
+	/* ------------------------------ */
+	/* USB-Blaster passive serial mode */
+	/* ------------------------------ */
+	if (args.passive_serial) {
+#ifdef ENABLE_USBBLASTER
+		if (cable.type != MODE_USBBLASTER) {
+			printError("Passive serial mode requires a USB-Blaster cable");
+			return EXIT_FAILURE;
+		}
+
+		try {
+			RawParser bit(args.bit_file, false);
+			if (bit.parse() != EXIT_SUCCESS)
+				throw std::runtime_error("Failed to parse raw RBF file");
+
+			UsbBlaster blaster(cable, args.probe_firmware, args.verbose);
+			blaster.programPassiveSerial(bit.getData(), bit.getLength() / 8);
+		} catch (std::exception &e) {
+			printError("Passive serial programming failed: " + std::string(e.what()));
+			return EXIT_FAILURE;
+		}
+
+		printSuccess("Passive serial programming DONE");
+		return EXIT_SUCCESS;
+#else
+		printError("USB-Blaster support was not enabled at compile time");
+		return EXIT_FAILURE;
+#endif
+	}
+
 	/* jtag base */
 
 
@@ -436,23 +478,23 @@ int main(int argc, char **argv)
 
 	Jtag *jtag;
 	try {
-		jtag = new Jtag(cable, &pins_config, args.device, args.ftdi_serial,
+		jtag = new Jtag(cable, &pins_config, args.device, args.usb_serial_num,
 				args.freq, args.verbose, args.ip_adr, args.port,
 				args.invert_read_edge, args.probe_firmware,
 				args.user_misc_devs);
 	} catch (std::exception &e) {
-		printError("JTAG init failed with: " + string(e.what()));
+		printError("JTAG init failed with: " + std::string(e.what()));
 		return EXIT_FAILURE;
 	}
 
 	/* chain detection */
-	vector<uint32_t> listDev = jtag->get_devices_list();
+	std::vector<uint32_t> listDev = jtag->get_devices_list();
 	size_t found = listDev.size();
 	int idcode = -1;
 	size_t index = 0;
 
 	if (args.verbose > 0)
-		cout << "found " << std::to_string(found) << " devices" << endl;
+		std::cout << "found " << std::to_string(found) << " devices" << std::endl;
 
 	/* in verbose mode or when detect
 	 * display full chain with details
@@ -522,7 +564,7 @@ int main(int argc, char **argv)
 
 	/* detect svf file and program the device */
 	if (!args.file_type.compare("svf") ||
-			args.bit_file.find(".svf") != string::npos) {
+			args.bit_file.find(".svf") != std::string::npos) {
 #ifdef ENABLE_SVF_JTAG
 		SVF_jtag *svf = new SVF_jtag(jtag, args.verbose);
 		try {
@@ -542,12 +584,12 @@ int main(int argc, char **argv)
 	 * mainly used in conjunction with --index-chain
 	 */
 	if (fpga_list.find(idcode) == fpga_list.end()) {
-		cerr << "Error: device " << hex << idcode << " not supported" << endl;
+		std::cerr << "Error: device " << std::hex << idcode << " not supported" << std::endl;
 		delete(jtag);
 		return EXIT_FAILURE;
 	}
 
-	string fab = fpga_list[idcode].manufacturer;
+	std::string fab = fpga_list[idcode].manufacturer;
 
 
 	Device *fpga;
@@ -622,7 +664,7 @@ int main(int argc, char **argv)
 			fpga = new CologneChip(jtag, args.bit_file, args.file_type,
 				args.prg_type, args.board, args.cable, args.verify, args.verbose);
 #else
-			printError("Support for Gowin FPGAs was not enabled at compile time");
+			printError("Support for Cologne Chip FPGAs was not enabled at compile time");
 			delete(jtag);
 			return EXIT_FAILURE;
 #endif
@@ -632,7 +674,7 @@ int main(int argc, char **argv)
 			return EXIT_FAILURE;
 		}
 	} catch (std::exception &e) {
-		printError("Error: Failed to claim FPGA device: " + string(e.what()));
+		printError("Error: Failed to claim FPGA device: " + std::string(e.what()));
 		delete(jtag);
 		return EXIT_FAILURE;
 	}
@@ -644,7 +686,7 @@ int main(int argc, char **argv)
 		try {
 			fpga->program(args.offset, args.unprotect_flash);
 		} catch (std::exception &e) {
-			printError("Error: Failed to program FPGA: " + string(e.what()));
+			printError("Error: Failed to program FPGA: " + std::string(e.what()));
 			delete(fpga);
 			delete(jtag);
 			return EXIT_FAILURE;
@@ -674,7 +716,7 @@ int main(int argc, char **argv)
 			return EXIT_FAILURE;
 		}
 		uint32_t rb_far = 0, rb_count = 0;
-		string why;
+		std::string why;
 		if (!parse_readback_spec(args.readback_frames, &rb_far, &rb_count,
 				&why)) {
 			printError("Error: --readback-frames " + why);
@@ -686,7 +728,7 @@ int main(int argc, char **argv)
 			xilinx_fpga->readbackFrames(rb_far, rb_count, args.readback_out,
 				args.readback_far_list);
 		} catch (std::exception &e) {
-			printError("Error: " + string(e.what()));
+			printError("Error: " + std::string(e.what()));
 			delete(fpga);
 			delete(jtag);
 			return EXIT_FAILURE;
@@ -760,7 +802,7 @@ int run_xvc_server(const struct arguments &args, const cable_t &cable,
 	try {
 		XVC_server *xvc = NULL;
 		xvc = new XVC_server(args.port, cable, pins_config, args.device,
-				args.ftdi_serial, args.freq, args.verbose, args.ip_adr,
+				args.usb_serial_num, args.freq, args.verbose, args.ip_adr,
 				args.invert_read_edge, args.probe_firmware);
 		/* create connection */
 		xvc->open_connection();
@@ -770,7 +812,7 @@ int run_xvc_server(const struct arguments &args, const cable_t &cable,
 		xvc->close_connection();
 		delete xvc;
 	} catch (std::exception &e) {
-		printError("XVC_server failed with " + string(e.what()));
+		printError("XVC_server failed with " + std::string(e.what()));
 		return EXIT_FAILURE;
 	}
 	printInfo("Xilinx Virtual Cable Stopped! ");
@@ -848,7 +890,7 @@ int spi_comm(struct arguments args, const cable_t &cable,
 				board->reset_pin, board->done_pin, DBUS6, board->oe_pin,
 				args.verify, args.verbose);
 #else
-			printError("Support for Gowin FPGAs was not enabled at compile time");
+			printError("Support for Cologne Chip FPGAs was not enabled at compile time");
 			return EXIT_FAILURE;
 #endif
 		} else {
@@ -886,7 +928,7 @@ int spi_comm(struct arguments args, const cable_t &cable,
 			spi->gpio_clear(board->reset_pin, true);
 		}
 
-		SPIFlash flash((SPIInterface *)spi, args.unprotect_flash, args.verbose);
+		SPIFlash flash((FlashInterface *)spi, args.unprotect_flash, args.verbose);
 		flash.display_status_reg();
 
 		if (args.prg_type != Device::RD_FLASH &&
@@ -896,14 +938,14 @@ int spi_comm(struct arguments args, const cable_t &cable,
 				bit = new RawParser(args.bit_file, false);
 				printSuccess("DONE");
 			} catch (std::exception &e) {
-				printError("FAIL");
+				printError("FAIL: unable to open '" + args.bit_file + "': " + std::string(e.what()));
 				delete spi;
 				return EXIT_FAILURE;
 			}
 
 			printInfo("Parse file ", false);
 			if (bit->parse() == EXIT_FAILURE) {
-				printError("FAIL");
+				printError("FAIL: unable to parse '" + args.bit_file + "'");
 				delete bit;
 				delete spi;
 				return EXIT_FAILURE;
@@ -914,7 +956,7 @@ int spi_comm(struct arguments args, const cable_t &cable,
 			try {
 				flash.erase_and_prog(args.offset, bit->getData(), bit->getLength()/8);
 			} catch (std::exception &e) {
-				printError("FAIL: " + string(e.what()));
+				printError("FAIL: " + std::string(e.what()));
 			}
 
 			if (args.verify)
@@ -950,7 +992,7 @@ int spi_comm(struct arguments args, const cable_t &cable,
 
 // parse double from string in engineering notation
 // can deal with postfixes k and m, add more when required
-static int parse_eng(string arg, double *dst) {
+static int parse_eng(std::string arg, double *dst) {
 	try {
 		size_t end;
 		double base = stod(arg, &end);
@@ -972,7 +1014,7 @@ static int parse_eng(string arg, double *dst) {
 			return EINVAL;
 		}
 	} catch (...) {
-		cerr << "error : speed: invalid format" << endl;
+		std::cerr << "error : speed: invalid format" << std::endl;
 		return EINVAL;
 	}
 }
@@ -981,8 +1023,9 @@ static int parse_eng(string arg, double *dst) {
 int parse_opt(int argc, char **argv, struct arguments *args,
 	jtag_pins_conf_t *pins_config)
 {
-	string freqo;
-	vector<string> pins, bus_dev_num;
+	std::string freqo;
+	std::string ftdi_serial;
+	std::vector<std::string> pins, bus_dev_num;
 	bool verbose = false, quiet = false;
 	int8_t verbose_level = -2;
 	try {
@@ -1002,11 +1045,11 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 				" UltraScale boards)",
 				cxxopts::value<std::string>(args->secondary_bit_file))
 			("b,board",     "board name, may be used instead of cable",
-				cxxopts::value<string>(args->board))
+				cxxopts::value<std::string>(args->board))
 			("B,bridge",    "disable spiOverJtag model detection by providing "
 				"bitstream(intel/xilinx)",
-				cxxopts::value<string>(args->bridge_path))
-			("c,cable", "jtag interface", cxxopts::value<string>(args->cable))
+				cxxopts::value<std::string>(args->bridge_path))
+			("c,cable", "jtag interface", cxxopts::value<std::string>(args->cable))
 			("status-pin",
 				"JTAG mode / FTDI: GPIO pin number to use as a status indicator (active low)",
 				cxxopts::value<int>(args->status_pin))
@@ -1019,19 +1062,21 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 				cxxopts::value<int16_t>(args->cable_index))
 			("busdev-num",
 				"select a probe by it bus and device number (bus_num:device_addr)",
-				cxxopts::value<vector<string>>(bus_dev_num))
-			("ftdi-serial", "FTDI chip serial number",
-				cxxopts::value<string>(args->ftdi_serial))
+				cxxopts::value<std::vector<std::string>>(bus_dev_num))
+			("usb-serial-num", "USB iSerial (FTDI chip serial number or ESP32 iSerialNumber substring)",
+				cxxopts::value<std::string>(args->usb_serial_num))
+			("ftdi-serial", "FTDI chip serial number (Deprecated)",
+				cxxopts::value<std::string>(ftdi_serial))
 			("ftdi-channel",
 				"FTDI chip channel number (channels 0-3 map to A-D)",
 				cxxopts::value<int>(args->ftdi_channel))
-#if defined(USE_DEVICE_ARG)
 			("d,device",  "device to use (/dev/ttyUSBx)",
-				cxxopts::value<string>(args->device))
-#endif
+				cxxopts::value<std::string>(args->device))
 			("detect",      "detect FPGA, add -f to show connected flash",
 				cxxopts::value<bool>(args->detect))
 			("dfu",   "DFU mode", cxxopts::value<bool>(args->dfu))
+			("passive-serial", "USB-Blaster passive serial mode",
+				cxxopts::value<bool>(args->passive_serial))
 			("dump-flash",  "Dump flash mode")
 			("bulk-erase",   "Bulk erase flash",
 				cxxopts::value<bool>(args->bulk_erase_flash))
@@ -1042,7 +1087,7 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			("target-flash",
 				"for boards with multiple flash chips (some Xilinx UltraScale"
 				" boards), select the target flash: primary (default), secondary or both",
-				cxxopts::value<string>(args->target_flash))
+				cxxopts::value<std::string>(args->target_flash))
 			("external-flash",
 				"select ext flash for device with internal and external storage",
 				cxxopts::value<bool>(args->external_flash))
@@ -1051,20 +1096,20 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 				cxxopts::value<unsigned int>(args->file_size))
 			("file-type",
 				"provides file type instead of let's deduced by using extension",
-				cxxopts::value<string>(args->file_type))
+				cxxopts::value<std::string>(args->file_type))
 			("flash-sector", "flash sector (Lattice and Altera MAX10 parts only)",
-				cxxopts::value<string>(args->flash_sector))
+				cxxopts::value<std::string>(args->flash_sector))
 			("fpga-part",   "fpga model flavor + package",
-				cxxopts::value<string>(args->fpga_part))
-			("freq",        "jtag frequency (Hz)", cxxopts::value<string>(freqo))
+				cxxopts::value<std::string>(args->fpga_part))
+			("freq",        "jtag frequency (Hz)", cxxopts::value<std::string>(freqo))
 			("f,write-flash",
 				"write bitstream in flash (default: false)")
 			("index-chain",  "device index in JTAG-chain",
 				cxxopts::value<int>(args->index_chain))
 			("misc-device",  "add JTAG non-FPGA devices <idcode,irlen,name>",
-				cxxopts::value<vector<string>>())
+				cxxopts::value<std::vector<std::string>>())
 			("ip", "IP address (XVC and remote bitbang client)",
-				cxxopts::value<string>(args->ip_adr))
+				cxxopts::value<std::string>(args->ip_adr))
 			("list-boards", "list all supported boards",
 				cxxopts::value<bool>(args->list_boards))
 			("list-cables", "list all supported cables",
@@ -1076,9 +1121,9 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			("o,offset", "Start address (in bytes) for read/write into non volatile memory (default: 0)",
 				cxxopts::value<unsigned int>(args->offset))
 			("pins", "pin config TDI:TDO:TCK:TMS or MOSI:MISO:SCK:CS[:HOLDN:WPN]",
-				cxxopts::value<vector<string>>(pins))
-			("probe-firmware", "firmware for JTAG probe (usbBlasterII)",
-				cxxopts::value<string>(args->probe_firmware))
+				cxxopts::value<std::vector<std::string>>(pins))
+			("probe-firmware", "firmware for JTAG probe (usbBlasterII/xilinxPlatformCableUsb)",
+				cxxopts::value<std::string>(args->probe_firmware))
 			("protect-flash",   "protect SPI flash area",
 				cxxopts::value<uint32_t>(args->protect_flash))
 			("quiet", "Produce quiet output (no progress bar)",
@@ -1098,6 +1143,9 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			("v,verbose", "Produce verbose output", cxxopts::value<bool>(verbose))
 			("verbose-level", "verbose level -1: quiet, 0: normal, 1:verbose, 2:debug",
 				cxxopts::value<int8_t>(verbose_level))
+			("force-terminal-mode",
+				"force progress bar output as if connected to a terminal",
+				cxxopts::value<bool>(args->force_terminal_mode))
 			("h,help", "Give this help list")
 			("verify", "Verify write operation (SPI Flash only)",
 				cxxopts::value<bool>(args->verify))
@@ -1116,29 +1164,30 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			("X,read-xadc", "Read XADC (Xilinx FPGA only)",
 				cxxopts::value<bool>(args->read_xadc))
 			("read-register", "Read Status Register(Xilinx FPGA only)",
-				cxxopts::value<string>(args->read_register))
+				cxxopts::value<std::string>(args->read_register))
 			("user-flash", "User flash file (Gowin LittleBee FPGA only)",
-				cxxopts::value<string>(args->user_flash))
+				cxxopts::value<std::string>(args->user_flash))
 			("partial", "load a PARTIAL bitstream into a running device: "
 				"no JPROGRAM, no JSTART (Xilinx 7-series, --write-sram only)",
 				cxxopts::value<bool>(args->partial))
 			("readback-frames", "read configuration frames out of a RUNNING "
 				"device through FDRO: <FAR>:<count> (Xilinx 7-series)",
-				cxxopts::value<string>(args->readback_frames))
+				cxxopts::value<std::string>(args->readback_frames))
 			("readback-out", "file the --readback-frames dump is written to, "
 				"in `bitread -o` format",
-				cxxopts::value<string>(args->readback_out))
+				cxxopts::value<std::string>(args->readback_out))
 			("readback-far-list", "ordered frame addresses of the part, one "
 				"per line; required by --readback-frames for more than one "
 				"frame",
-				cxxopts::value<string>(args->readback_far_list))
-			("V,Version", "Print program version");
+				cxxopts::value<std::string>(args->readback_far_list))
+			("V,version", "Print program version")
+			("Version", "Print program version (Deprecated)");
 
 		options.parse_positional({"bitstream"});
 		auto result = options.parse(argc, argv);
 
 		if (result.count("help")) {
-			cout << options.help() << endl;
+			std::cout << options.help() << std::endl;
 			return 1;
 		}
 
@@ -1160,8 +1209,8 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			args->verbose = verbose_level;
 		}
 
-		if (result.count("Version")) {
-			cout << "openFPGALoader " << VERSION << endl;
+		if (result.count("Version") || result.count("version")) {
+			std::cout << "openFPGALoader " << VERSION << std::endl;
 			return 1;
 		}
 
@@ -1258,16 +1307,24 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			 * constructor -- mcs and jed do not reach program_mem() at all,
 			 * pdi reaches it and then takes the PDI arm, which is neither
 			 * guarded block.  --partial would be silently inert. */
-			string t = args->file_type;
+			std::string t = args->file_type;
 			if (t.empty()) {
 				size_t dot = args->bit_file.rfind('.');
-				if (dot != string::npos)
+				if (dot != std::string::npos)
 					t = args->bit_file.substr(dot + 1);
 			}
 			if (t != "bit" && t != "bin") {
 				printError("Error: --partial needs a .bit or .bin file "
-					"(got file type '" + (t.empty() ? string("<none>") : t) +
+					"(got file type '" + (t.empty() ? std::string("<none>") : t) +
 					"'); use --file-type to override the extension");
+				return -1;
+			}
+		}
+
+		if (args->passive_serial) {
+			if (args->spi || args->dfu || args->xvc || args->detect) {
+				printError("Error: --passive-serial cannot be combined with "
+					"--spi, --dfu, --xvc or --detect");
 				return -1;
 			}
 		}
@@ -1285,7 +1342,7 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 		 * -------------------------------------------------------------- */
 		if (!args->readback_frames.empty()) {
 			uint32_t rb_far = 0, rb_count = 0;
-			string why;
+			std::string why;
 			/* 1. a malformed spec, decided before a cable is opened. */
 			if (!parse_readback_spec(args->readback_frames, &rb_far,
 					&rb_count, &why)) {
@@ -1375,6 +1432,14 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			}
 		}
 
+		if (result.count("ftdi-serial")) {
+			if (result.count("usb-serial-num")) {
+				printError("Error: ftdi-serial and usb-serial-num can't be used at the same time.");
+				return -1;
+			}
+			args->usb_serial_num = ftdi_serial;
+		}
+
 		if (result.count("busdev-num")) {
 			if (bus_dev_num.size() != 2) {
 				printError("Error: busdev-num must be xx:yy");
@@ -1442,7 +1507,7 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 				 !args->detect
 				) {
 				printError("Error: secondary bitfile not specified");
-				cout << options.help() << endl;
+				std::cout << options.help() << std::endl;
 				return -1;
 			}
 		}
@@ -1450,12 +1515,6 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 		if (args->list_cables || args->list_boards || args->list_fpga ||
 			args->scan_usb)
 			args->is_list_command = true;
-
-		if (args->mcufw.empty()) {
-			printf("empty\n");
-		} else {
-			printf("pas empty\n");
-		}
 
 		if (args->bit_file.empty() &&
 			args->secondary_bit_file.empty() &&
@@ -1481,7 +1540,7 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			args->readback_frames.empty() &&
 			args->read_register.empty()) {
 			printError("Error: bitfile not specified");
-			cout << options.help() << endl;
+			std::cout << options.help() << std::endl;
 			return -1;
 		}
 
@@ -1493,7 +1552,7 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			args->detect_flash = true;
 		}
 	} catch (const cxxopts::OptionException& e) {
-		printError("Error parsing options: " + string(e.what()));
+		printError("Error parsing options: " + std::string(e.what()));
 		return -1;
 	}
 
@@ -1504,27 +1563,27 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 void displaySupported(const struct arguments &args)
 {
 	if (args.list_cables == true) {
-		stringstream t;
-		t << setw(25) << left << "cable name" << "vid:pid";
+		std::stringstream t;
+		t << std::setw(25) << std::left << "cable name" << "vid:pid";
 		printSuccess(t.str());
 		for (auto b = cable_list.begin(); b != cable_list.end(); b++) {
 			cable_t c = (*b).second;
-			stringstream ss;
-			ss << setw(25) << left << (*b).first;
-			ss << "0x" << hex << right << setw(4) << setfill('0') << c.vid
-				<< ":" << setw(4) << c.pid;
+			std::stringstream ss;
+			ss << std::setw(25) << std::left << (*b).first;
+			ss << "0x" << std::hex << std::right << std::setw(4) << std::setfill('0') << c.vid
+				<< ":" << std::setw(4) << c.pid;
 			printInfo(ss.str());
 		}
-		cout << endl;
+		std::cout << std::endl;
 	}
 
 	if (args.list_boards) {
-		stringstream t;
-		t << setw(27) << left << "board name" << setw(19) << "cable_name";
-		t << setw(25) << "fpga_part";
+		std::stringstream t;
+		t << std::setw(27) << std::left << "board name" << std::setw(19) << "cable_name";
+		t << std::setw(25) << "fpga_part";
 		printSuccess(t.str());
 		for (auto b = board_list.begin(); b != board_list.end(); b++) {
-			stringstream ss;
+			std::stringstream ss;
 			target_board_t c = (*b).second;
 			std::string cable_name = c.cable_name;
 			std::string fpga_part = c.fpga_part;
@@ -1532,28 +1591,28 @@ void displaySupported(const struct arguments &args)
 				cable_name = "Undefined";
 			if (fpga_part.size() == 0)
 				fpga_part = "Undefined";
-			ss << setw(27) << left << (*b).first << setw(19) << cable_name;
-			ss << setw(25)<< fpga_part;
+			ss << std::setw(27) << std::left << (*b).first << std::setw(19) << cable_name;
+			ss << std::setw(25)<< fpga_part;
 			printInfo(ss.str());
 		}
-		cout << endl;
+		std::cout << std::endl;
 	}
 
 	if (args.list_fpga) {
-		stringstream t;
-		t << setw(12) << left << "IDCode" << setw(14) << "manufacturer";
-		t << setw(16) << "family" << setw(20) << "model";
+		std::stringstream t;
+		t << std::setw(12) << std::left << "IDCode" << std::setw(14) << "manufacturer";
+		t << std::setw(16) << "family" << std::setw(20) << "model";
 		printSuccess(t.str());
 		for (auto b = fpga_list.begin(); b != fpga_list.end(); b++) {
 			fpga_model fpga = (*b).second;
-			stringstream ss, idCode;
-			idCode << "0x" << hex << setw(8) << setfill('0') << (*b).first;
-			ss << setw(12) << left << idCode.str();
-			ss << setw(14) << fpga.manufacturer << setw(16) << fpga.family;
-			ss << setw(20) << fpga.model;
+			std::stringstream ss, idCode;
+			idCode << "0x" << std::hex << std::setw(8) << std::setfill('0') << (*b).first;
+			ss << std::setw(12) << std::left << idCode.str();
+			ss << std::setw(14) << fpga.manufacturer << std::setw(16) << fpga.family;
+			ss << std::setw(20) << fpga.model;
 			printInfo(ss.str());
 		}
-		cout << endl;
+		std::cout << std::endl;
 	}
 
 #ifdef ENABLE_USB_SCAN

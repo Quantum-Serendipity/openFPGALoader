@@ -27,7 +27,6 @@
 #include "part.hpp"
 #include "spiFlash.hpp"
 
-using namespace std;
 
 #define ISC_ENABLE					0xC6		/* ISC_ENABLE - Offline Mode */
 #  define ISC_ENABLE_FLASH_MODE		(1 << 3)
@@ -162,10 +161,10 @@ using namespace std;
 /* Nexus */
 #define REG_NEXUS_STATUS_BSE_ERR_MASK (0x0f << 24)
 
-Lattice::Lattice(Jtag *jtag, const string filename, const string &file_type,
+Lattice::Lattice(Jtag *jtag, const std::string filename, const std::string &file_type,
 	Device::prog_type_t prg_type, std::string flash_sector, bool verify, int8_t verbose, bool skip_load_bridge, bool skip_reset):
 		Device(jtag, filename, file_type, verify, verbose),
-		SPIInterface(filename, verbose, 0, verify, skip_load_bridge, skip_reset),
+		FlashInterface(filename, verbose, 0, verify, skip_load_bridge, skip_reset),
 		_fpga_family(UNKNOWN_FAMILY), _flash_sector(LATTICE_FLASH_UNDEFINED)
 {
 	if (prg_type == Device::RD_FLASH) {
@@ -188,7 +187,7 @@ Lattice::Lattice(Jtag *jtag, const string filename, const string &file_type,
 	}
 	/* check device family */
 	uint32_t idcode = _jtag->get_target_device_id();
-	string family = fpga_list[idcode].family;
+	std::string family = fpga_list[idcode].family;
 	if (family == "MachXO2") {
 		_fpga_family = MACHXO2_FAMILY;
 	} else if (family == "MachXO3L" || family == "MachXO3LF") {
@@ -643,7 +642,7 @@ bool Lattice::program_intFlash(ConfigBitstreamParser *_cbp)
 	uint16_t ufm_start = 0;
 	uint16_t feabits;
 	uint8_t eraseMode = 0;
-	vector<string> ufm_data, cfg_data, ebr_data;
+	std::vector<std::string> ufm_data, cfg_data, ebr_data;
 
 	/* bypass */
 	wr_rd(0xff, NULL, 0, NULL, 0);
@@ -663,7 +662,7 @@ bool Lattice::program_intFlash(ConfigBitstreamParser *_cbp)
 	if (_file_extension == "jed") {
 		JedParser *_jed = reinterpret_cast<JedParser *>(_cbp);
 		for (size_t i = 0; i < _jed->nb_section(); i++) {
-			string note = _jed->noteForSection(i);
+			std::string note = _jed->noteForSection(i);
 			if (note == "TAG DATA") {
 				eraseMode |= FLASH_ERASE_UFM;
 				ufm_data = _jed->data_for_section(i);
@@ -839,7 +838,7 @@ bool Lattice::post_flash_access()
 			_skip_reset = true;  // avoid infinite loop
 			/* read flash 0 -> 255 */
 			uint8_t buffer[256];
-			ret = SPIInterface::read(buffer, 0, 256);
+			ret = FlashInterface::read(buffer, 0, 256);
 			loadConfiguration(); // reset again
 
 			/* read ok? check if everything == 0xff */
@@ -988,9 +987,9 @@ bool Lattice::program_extFlash(unsigned int offset, bool unprotect_flash)
 
 	if (_file_extension == "mcs") {
 		McsParser *parser = (McsParser *)_bit;
-		ret = SPIInterface::write(parser->getRecords(), unprotect_flash, true);
+		ret = FlashInterface::write(parser->getRecords(), unprotect_flash, true);
 	} else {
-		ret = SPIInterface::write(offset, _bit->getData(), _bit->getLength() / 8,
+		ret = FlashInterface::write(offset, _bit->getData(), _bit->getLength() / 8,
 			unprotect_flash);
 	}
 
@@ -1536,7 +1535,7 @@ bool Lattice::pollBusyFlag(bool verbose)
 		if (verbose)
 			printf("pollBusyFlag :%02x\n", rx);
 		if (timeout == 100000000){
-			cerr << "timeout" << endl;
+			std::cerr << "timeout" << std::endl;
 			return false;
 		} else {
 			timeout++;
@@ -1586,7 +1585,7 @@ bool Lattice::flashErase(uint32_t  mask)
 	return true;
 }
 
-bool Lattice::flashProg(uint32_t start_addr, const string &name, vector<string> data)
+bool Lattice::flashProg(uint32_t start_addr, const std::string &name, std::vector<std::string> data)
 {
 	(void)start_addr;
 	ProgressBar progress("Writing " + name, data.size(), 50, _quiet);
@@ -2225,7 +2224,7 @@ bool Lattice::program_fea_MachXO3D()
 bool Lattice::program_intFlash_MachXO3D(JedParser& _jed)
 {
 	uint32_t erase_op = 0, prog_op = 0;
-	vector<string> data;
+	std::vector<std::string> data;
 	int offset, fuse_count;
 
 	/* bypass */
@@ -2251,7 +2250,7 @@ bool Lattice::program_intFlash_MachXO3D(JedParser& _jed)
 			/* if no data, nothing to do */
 			continue;
 		}
-		string note = _jed.noteForSection(i);
+		std::string note = _jed.noteForSection(i);
 		offset = _jed.offset_for_section(i) / 128;
 
 		erase_op = 0;

@@ -13,6 +13,20 @@
   Memory: OK
   Flash: OK
 
+- ID: alibaba_u3p
+  Description: AS02MC04 (Alibaba Cloud) Kintex UltraScale+ NIC
+  URL: https://www.controlpaths.com/2026/01/18/as02mc04-kintex-ultrascale-plus/
+  FPGA: Kintex UltraScale+ xcku3p-ffvb676
+  Memory: OK
+  Flash: OK
+
+- ID: alinx_ax7035b
+  Description: AX7201 FPGA Dev Board & Kit with AMD Artix 7
+  URL: https://www.en.alinx.com/Product/FPGA-Development-Boards/Artix-7/AX7A035B.html
+  FPGA: Artix xc7a35tfgg484
+  Memory: OK
+  Flash: OK
+
 - ID: alinx_ax7201
   Description: AX7201 FPGA Dev Board & Kit with AMD Artix 7
   URL: https://www.en.alinx.com/Product/FPGA-Development-Boards/Artix-7/AX7201.html
@@ -26,6 +40,48 @@
   FPGA: Artix xc7a200tfbg484
   Memory: OK
   Flash: OK
+
+- ID: alinx_axku042
+  Description: ALINX AXKU042 Kintex UltraScale FPGA Dev Board
+  URL: https://www.en.alinx.com/Product/FPGA-Development-Boards/Kintex-UltraScale/AXKU042.html
+  FPGA: Kintex UltraScale xcku040-ffva1156
+  Memory: OK
+  Flash: OK
+
+- ID: alinx_axku062
+  Description: ALINX AXKU062 Kintex UltraScale FPGA Dev Board
+  URL: https://www.en.alinx.com/Product/FPGA-Development-Boards/Kintex-UltraScale/AXKU062.html
+  FPGA: Kintex UltraScale xcku060-ffva1156
+  Memory: OK
+  Flash: OK
+
+- ID: alinx_axku095
+  Description: ALINX AXKU095 Kintex UltraScale FPGA Dev Board
+  URL: https://www.en.alinx.com/Product/FPGA-Development-Boards/Kintex-UltraScale/AXKU095.html
+  FPGA: Kintex UltraScale xcku095-ffva1156
+  Memory: OK
+  Flash: OK
+
+- ID: atumA3Nano
+  Description: Terasic Atum A3 Nano
+  URL: https://www.terasic.com.tw/cgi-bin/page/archive.pl?Language=English&No=1373
+  FPGA: Altera Agilex 3 A3CZ135BB18AE7S
+  Memory: OK
+  Flash: NT
+
+- ID: axc3000
+  Description: Arrow AXC3000
+  URL: https://www.arrow.com/de/products/axc3000/trenz-electronic-gmbh.html
+  FPGA: Altera Agilex 3 A3CY100BM16AE7S
+  Memory: OK
+  Flash: NT
+
+- ID: axe5000
+  Description: A5EC008BM16AE6S FPGA Starter Kit
+  URL: https://www.arrow.com/en/products/axe5000/trenz-electronic-gmbh.html
+  FPGA: Altera Agilex 5 A5EC008BM16AE6S
+  Memory: OK
+  Flash: NT
 
 - ID: litex-acorn-baseboard-mini
   Description: The LiteX-Acorn-Baseboards are baseboards developed around the SQRL's Acorn board (or Nite/LiteFury)
@@ -171,6 +227,13 @@
   FPGA: Artix xc7a35tcpg236
   Memory: OK
   Flash: OK
+
+- ID: blackboard
+  Description: RealDigital Blackboard
+  URL: https://www.realdigital.org/hardware/blackboard
+  FPGA: Zynq7000 xc7z007sclg400
+  Memory: OK
+  Flash: NA
 
 - ID: cmod_s7
   Description: Digilent Cmod S7
@@ -325,6 +388,7 @@
   URL: https://www.terasic.com.tw/cgi-bin/page/archive.pl?Language=English&CategoryNo=218&No=1021&PartNo=1
   FPGA: MAX 10 10M50DAF484C7G
   Memory: OK
+  Flash: IF
 
 - ID: de10nano
   Description: Terasic de10Nano
@@ -337,6 +401,13 @@
   URL: https://www.terasic.com.tw/cgi-bin/page/archive.pl?Language=English&CategoryNo=167&No=836
   FPGA: Cyclone V SoC 5CSEMA5F31C6
   Memory: OK
+
+- ID: de23lite
+  Description: Terasic DE23-Lite
+  URL: https://www.terasic.com.tw/cgi-bin/page/archive.pl?Language=English&No=1383
+  FPGA: Altera Agilex 3 A3CZ135BB18AE7S
+  Memory: RBF
+  Flash: NT
 
 - ID: deca
   Description: Arrow/Terasic DECA
@@ -366,8 +437,8 @@
   Memory: OK
   Flash: OK
   Constraints:
-    - ECPIX-5-45F
-    - ECPIX-5-85F
+      - ECPIX-5-45F
+      - ECPIX-5-85F
 
 - ID: ecpix5_r03
   Description: LambdaConcept ECPIX-5 (FT4232)
@@ -376,8 +447,15 @@
   Memory: OK
   Flash: OK
   Constraints:
-    - ECPIX-5-45F
-    - ECPIX-5-85F
+      - ECPIX-5-45F
+      - ECPIX-5-85F
+
+- ID: epm11
+  Description: BrisbaneSilicon EPM11
+  URL: https://brisbanesilicon.com.au/epm11/
+  FPGA: littleBee GW1NR-9C
+  Memory: OK
+  Flash: IF
 
 - ID: fireant
   Description: Fireant Trion T8
@@ -437,8 +515,8 @@
   Memory: NA
   Flash: OK
   Constraints:
-    - iCEBreaker-bitsy-v0
-    - iCEBreaker-bitsy-v1
+      - iCEBreaker-bitsy-v0
+      - iCEBreaker-bitsy-v1
 
 - ID: ice40_generic
   Description: icestick
@@ -516,6 +594,13 @@
   FPGA: Kintex UltraScale+ xcku5p-ffvb676
   Memory: OK
   Flash: OK
+
+- ID: kr260
+  Description: AMD Kria KR260 Robotics Starter Kit
+  URL: https://docs.amd.com/r/en-US/ug1092-kr260-starter-kit/Interfaces
+  FPGA: Kria K26 xck26
+  Memory: OK
+  Flash: NA
 
 - ID: LD-KONFEKT
   Description: Lone Dynamics Corporation - Machdyne Konfekt computer
@@ -674,6 +759,13 @@
   Memory: OK
   Flash: NA
 
+- ID: qmtechArtix7_100T
+  Description: QMTech Artix-7 XC7A100T Core Board (FGG676)
+  URL: https://www.aliexpress.com/item/1005003746671141.html
+  FPGA: Artix-7 xc7a100tfgg676
+  Memory: OK
+  Flash: OK
+
 - ID: qmtechCyclone10
   Description: QMTech Cyclone 10 Starter Kit
   URL: http://www.chinaqmtech.com/productinfo/1858435.html
@@ -736,6 +828,13 @@
   FPGA: Spartan6 xc6slx25-3-ftg256
   Memory: OK
   Flash: NT
+
+- ID: sp701
+  Description: Xilinx SP701
+  URL: https://www.amd.com/en/products/adaptive-socs-and-fpgas/evaluation-boards/sp701.html
+  FPGA: Spartan 7 xc7s100-2-fgga676
+  Memory: OK
+  Flash: OK
 
 - ID: spartanEdgeAccelBoard
   Description: SeeedStudio Spartan Edge Accelerator Board
@@ -841,6 +940,13 @@
   Memory: OK
   Flash: IF
 
+- ID: brs-100-gw1nr9
+  Description: BrisbaneSilicon BRS-100-GW1NR9
+  URL: https://brisbanesilicon.com.au/brs-100-gw1nr9/
+  FPGA: littleBee GW1NR-9C
+  Memory: OK
+  Flash: IF/EF
+
 - ID: trion_t20_bga256_jtag
   Description: Efinix Trion T20 BGA256 Dev Kit
   URL: https://www.efinixinc.com/products-devkits-triont20.html
@@ -890,10 +996,10 @@
   Memory: OK
   Flash: OK
   Constraints:
-    - ULX3S-12F
-    - ULX3S-25F
-    - ULX3S-45F
-    - ULX3S-85F
+      - ULX3S-12F
+      - ULX3S-25F
+      - ULX3S-45F
+      - ULX3S-85F
 
 - ID: ulx3s_dfu
   Description: Radiona ULX3S DFU mode
@@ -1069,6 +1175,13 @@
 - ID: step-mxo2_v2
   Description: STEP MXO2 V2
   URL: https://wiki.stepfpga.com/xo2-4000hc
-  FPGA: Lattice LCMXO2-4000HC-4MG132CC
+  FPGA: Lattice LCMXO2-4000HC-4MG132C
+  Memory: OK
+  Flash: OK
+
+- ID: step-mxo2_v1.1
+  Description: STEP MXO2 V1.1
+  URL: https://wiki.stepfpga.com/step-mxo2%E7%AC%AC%E4%B8%80%E4%BB%A3
+  FPGA: Lattice LCMXO2-1200HC-4MG132C
   Memory: OK
   Flash: OK

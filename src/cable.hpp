@@ -30,6 +30,7 @@ enum communication_type {
 	MODE_CH347,            /*! CH347 JTAG mode */
 	MODE_GWU2X,            /*! Gowin GWU2X JTAG mode */
 	MODE_ESP,              /*! esp32c3, esp32s3 */
+	MODE_XPCU,             /*! Xilinx Platform Cable USB (XPCU) */
 };
 
 /*!
@@ -99,6 +100,7 @@ static std::map <std::string, cable_t> cable_list = {
 	{"dfu",                CABLE_DEF(MODE_DFU, 0, 0                                    )},
 	{"digilent",           FTDI_SER(0x0403, 0x6010, FTDI_INTF_A, 0xe8, 0xeb, 0x00, 0x60)},
 	{"digilent_b",         FTDI_SER(0x0403, 0x6010, FTDI_INTF_B, 0xe8, 0xeb, 0x00, 0x60)},
+	{"digilent_ft4232",    FTDI_SER(0x0403, 0x6011, FTDI_INTF_A, 0x08, 0x2B, 0x08, 0x0B)},
 	{"digilent_hs2",       FTDI_SER(0x0403, 0x6014, FTDI_INTF_A, 0xe8, 0xeb, 0x00, 0x60)},
 	{"digilent_hs3",       FTDI_SER(0x0403, 0x6014, FTDI_INTF_A, 0x88, 0x8B, 0x20, 0x30)},
 	{"digilent_ad",        FTDI_SER(0x0403, 0x6014, FTDI_INTF_A, 0x08, 0x0B, 0x80, 0x80)},
@@ -123,11 +125,13 @@ static std::map <std::string, cable_t> cable_list = {
 	{"jlink_base",         CABLE_DEF(MODE_JLINK, 0x1366, 0x0101                        )},
 	{"jtrace_pro",         CABLE_DEF(MODE_JLINK, 0x1366, 0x1020                        )},
 	{"jtag-smt2-nc",       FTDI_SER(0x0403, 0x6014, FTDI_INTF_A, 0xe8, 0xeb, 0x00, 0x60)},
+	{"jtag-smt4",          FTDI_SER(0x0403, 0x6011, FTDI_INTF_A, 0xe8, 0xeb, 0x00, 0x60)},
 	{"lpc-link2",          CMSIS_CL(0x1fc9, 0x0090                                     )},
 	{"numato",			   FTDI_SER(0x2a19, 0x1009, FTDI_INTF_B, 0x08, 0x4b, 0x00, 0x00)},
 	{"numato-neso",	       FTDI_SER(0x2a19, 0x1005, FTDI_INTF_B, 0x08, 0x4b, 0x00, 0x00)},
 	{"orbtrace",           CMSIS_CL(0x1209, 0x3443                                     )},
 	{"papilio",            FTDI_SER(0x0403, 0x6010, FTDI_INTF_A, 0x08, 0x0B, 0x09, 0x0B)},
+	{"sipeed_slogic_combo8", CMSIS_CL(0xd6e7, 0x3507                                   )},
 	{"steppenprobe",       FTDI_SER(0x0403, 0x6010, FTDI_INTF_A, 0x58, 0xFB, 0x00, 0x99)},
 	{"tigard",             FTDI_SER(0x0403, 0x6010, FTDI_INTF_B, 0x08, 0x3B, 0x00, 0x00)},
 	{"usb-blaster",        CABLE_DEF(MODE_USBBLASTER, 0x09Fb, 0x6001                   )},
@@ -135,7 +139,9 @@ static std::map <std::string, cable_t> cable_list = {
 	{"usb-blaster_2",      CABLE_DEF(MODE_USBBLASTER, 0x09Fb, 0x6003                   )},
 	{"usb-blasterII",      CABLE_DEF(MODE_USBBLASTER, 0x09Fb, 0x6810                   )},
 	{"usb-blasterII_1",    CABLE_DEF(MODE_USBBLASTER, 0x09Fb, 0x6010                   )},
-	{"usb-blasterIII",     FTDI_SER(0x09fb, 0x6022, FTDI_INTF_A, 0x08, 0x3B, 0x00, 0x00)},
+	{"usb-blasterIII",     FTDI_SER(0x09fb, 0x6022, FTDI_INTF_A, 0x08, 0x3B, 0x58, 0xb0)},
+	{"xilinxPlatformCableUsb",     CABLE_DEF(MODE_XPCU, 0x03fd, 0x0013                 )},
+	{"xilinxPlatformCableUsb_alt", CABLE_DEF(MODE_XPCU, 0x03fd, 0x000D                 )},
 	{"xvc-client",         CABLE_DEF(MODE_XVC_CLIENT, 0x0000, 0x0000                   )},
 #ifdef ENABLE_LIBGPIOD
 	{"libgpiod",           CABLE_DEF(MODE_LIBGPIOD_BITBANG, 0, 0x0000                  )},

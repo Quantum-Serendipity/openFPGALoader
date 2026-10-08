@@ -16,9 +16,9 @@
 #include "device.hpp"
 #include "jedParser.hpp"
 #include "jtag.hpp"
-#include "spiInterface.hpp"
+#include "flashInterface.hpp"
 
-class Xilinx: public Device, SPIInterface {
+class Xilinx: public Device, FlashInterface {
 	public:
 		Xilinx(Jtag *jtag, const std::string &filename,
 				const std::string &secondary_filename,
@@ -40,6 +40,7 @@ class Xilinx: public Device, SPIInterface {
 		void program_bpi(ConfigBitstreamParser * bit, unsigned int offset);
 		void program_mem(ConfigBitstreamParser *bitfile);
 		bool dumpFlash(uint32_t base_addr, uint32_t len) override;
+		bool dumpFlash_bpi(uint32_t base_addr, uint32_t len);
 
 		bool read_register(const std::string reg_name) override {
 			displayRegister(reg_name, dumpRegister(reg_name));

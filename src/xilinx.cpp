@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 /*
  * Copyright (C) 2019 Gwenhael Goavec-Merou <gwenhael.goavec-merou@trabucayre.com>
+ * Copyright (C) 2026 Apple Inc.
  */
 
 #define __STDC_FORMAT_MACROS
@@ -34,7 +35,7 @@
 #endif
 #include "rawParser.hpp"
 #include "spiFlash.hpp"
-#include "spiInterface.hpp"
+#include "flashInterface.hpp"
 #include "xilinx.hpp"
 #include "xilinxMapParser.hpp"
 
@@ -160,11 +161,14 @@ static std::map<std::string, std::map<std::string, std::vector<uint8_t>>>
 		{
 			/* Xilinx Virtex UltraScale+ */
 			/* <vivado_dir>/data/parts/xilinx/virtexuplus/public/bsdl/xcvu9p_flga2104.bsd */
+                        /* SLR1 is the master SLR  */
 			"virtexusp",
 			{
 				{ "USER1",       {0b00100100, 0b00101001, 0b00} },
 				{ "USER2",       {0b00100100, 0b00111001, 0b00} },
+				{ "USER4",       {0b00100100, 0b00111001, 0b10} },
 				{ "CFG_IN",      {0b00100100, 0b01011001, 0b00} },  // CFG_IN_SLR1
+				{ "CFG_OUT",     {0b00100100, 0b01001001, 0b00} },  // CFG_OUT_SLR1
 				{ "USERCODE",    {0b00100100, 0b10001001, 0b00} },
 				{ "IDCODE",      {0b01001001, 0b10010010, 0b00} },
 				{ "ISC_ENABLE",  {0b00010000, 0b00000100, 0b01} },
@@ -174,6 +178,47 @@ static std::map<std::string, std::map<std::string, std::vector<uint8_t>>>
 				{ "ISC_PROGRAM", {0b01010001, 0b00010100, 0b01} },
 				{ "ISC_DISABLE", {0b10010110, 0b01100101, 0b01} },
 				{ "BYPASS",      {0b11111111, 0b11111111, 0b11} },
+			}
+		},
+		{
+			/* Xilinx Virtex UltraScale+ */
+			/* <vivado_dir>/data/parts/xilinx/virtexuplus/public/bsdl/xcvu7p_flvb2104.bsd */
+			"virtexusp_vu7p",
+			{
+				{ "USER1",       {0b10100100, 0b0000} },
+				{ "USER2",       {0b11100100, 0b0000} },
+				{ "USER4",       {0b11100100, 0b1000} },
+				{ "CFG_IN",      {0b01100100, 0b0001} }, // CFG_IN_SLR0
+				{ "CFG_OUT",     {0b00100100, 0b0001} }, // CFG_OUT_SLR0
+				{ "USERCODE",    {0b00100100, 0b0010} },
+				{ "IDCODE",      {0b01001001, 0b0010} },
+				{ "ISC_ENABLE",  {0b00010000, 0b0100} },
+				{ "JPROGRAM",    {0b11001011, 0b0010} },
+				{ "JSTART",      {0b00001100, 0b0011} },
+				{ "JSHUTDOWN",   {0b01001101, 0b0011} },
+				{ "ISC_PROGRAM", {0b01010001, 0b0100} },
+				{ "ISC_DISABLE", {0b10010110, 0b0101} },
+				{ "BYPASS",      {0b11111111, 0b1111} }
+			}
+		},
+		{
+			/* Xilinx Virtex UltraScale+ VU19P (xcvu19p_fsva3824) */
+			/* 4-SLR SSI; SLR1 is master per BSDL */
+			"virtexusp_vu19p",
+			{
+				{ "USER1",       {0b00100100, 0b01001001, 0b00001010} },
+				{ "USER2",       {0b00100100, 0b01001001, 0b00001110} },
+				{ "CFG_IN",      {0b00100100, 0b01001001, 0b00010110} },
+				{ "CFG_OUT",     {0b00100100, 0b01001001, 0b00010010} },
+				{ "USERCODE",    {0b00100100, 0b01001001, 0b00100010} },
+				{ "IDCODE",      {0b01001001, 0b10010010, 0b00100100} },
+				{ "ISC_ENABLE",  {0b00010000, 0b00000100, 0b01000001} },
+				{ "JPROGRAM",    {0b11001011, 0b10110010, 0b00101100} },
+				{ "JSTART",      {0b00001100, 0b11000011, 0b00110000} },
+				{ "JSHUTDOWN",   {0b01001101, 0b11010011, 0b00110100} },
+				{ "ISC_PROGRAM", {0b01010001, 0b00010100, 0b01000101} },
+				{ "ISC_DISABLE", {0b10010110, 0b01100101, 0b01011001} },
+				{ "BYPASS",      {0b11111111, 0b11111111, 0b11111111} },
 			}
 		}
 };
@@ -189,20 +234,24 @@ static void open_bitfile(
 	const std::string &filename, const std::string &extension,
 	ConfigBitstreamParser **parser, bool reverse, bool verbose)
 {
-	printInfo("Open file ", false);
-	if (extension == "bit") {
-		*parser = new BitParser(filename, reverse, verbose);
-	} else if (extension == "mcs") {
-		*parser = new McsParser(filename, reverse, verbose);
-	} else {
-		*parser = new RawParser(filename, reverse);
+	printInfo("Open file " + filename + " ", false);
+	try {
+		if (extension == "bit") {
+			*parser = new BitParser(filename, reverse, verbose);
+		} else if (extension == "mcs") {
+			*parser = new McsParser(filename, reverse, verbose);
+		} else {
+			*parser = new RawParser(filename, reverse);
+		}
+	} catch (const std::exception &e) {
+		throw std::runtime_error("Unable to open '" + filename + "': " + e.what());
 	}
 
 	printSuccess("DONE");
 
 	printInfo("Parse file ", false);
 	if ((*parser)->parse() == EXIT_FAILURE) {
-		throw std::runtime_error("Failed to parse bitstream");
+		throw std::runtime_error("Failed to parse bitstream '" + filename + "'");
 	}
 
 	printSuccess("DONE");
@@ -283,7 +332,7 @@ Xilinx::Xilinx(Jtag *jtag, const std::string &filename,
 	bool skip_load_bridge, bool skip_reset, bool read_dna, bool read_xadc,
 	bool partial):
 	Device(jtag, filename, file_type, verify, verbose),
-	SPIInterface(filename, verbose, 256, verify, skip_load_bridge,
+	FlashInterface(filename, verbose, 256, verify, skip_load_bridge,
 				 skip_reset),
 	_device_package(device_package), _spiOverJtagPath(spiOverJtagPath),
 	_irlen(6), _secondary_filename(secondary_filename), _soj_is_v2(false),
@@ -324,7 +373,7 @@ Xilinx::Xilinx(Jtag *jtag, const std::string &filename,
 		_secondary_file_extension = secondary_filename.substr(
 			secondary_filename.find_last_of(".") + 1);
 		_mode = Device::SPI_MODE;
-		if (!(_device_package == "xcvu9p-flga2104" || _device_package == "xcku5p-ffvb676" || _device_package == "xcku040-ffva1156")) {
+		if (!(_device_package == "xcvu9p-flga2104" || _device_package == "xcvu9p-flgb2104" || _device_package == "xcku5p-ffvb676" || _device_package == "xcku040-ffva1156")) {
 			throw std::runtime_error("Error: secondary flash unavailable");
 		}
 	}
@@ -341,7 +390,10 @@ Xilinx::Xilinx(Jtag *jtag, const std::string &filename,
 		_fpga_family = SPARTAN7_FAMILY;
 	} else if (family == "zynq") {
 		_fpga_family = ZYNQ_FAMILY;
-		if (_mode != Device::MEM_MODE) {
+		/* DNA read uses a 7-series PL JTAG instruction and should not
+		 * be blocked by the Zynq PS-side SPI flash restriction.
+		 */
+		if (_mode != Device::MEM_MODE && !read_dna) {
 			char mess[256];
 			snprintf(mess, 256, "Error: can't flash non-volatile memory for "
 				"Zynq7000 devices\n"
@@ -379,7 +431,12 @@ Xilinx::Xilinx(Jtag *jtag, const std::string &filename,
 		_fpga_family = VIRTEXUS_FAMILY;
 	} else if (family == "virtexusp") {
 		_fpga_family = VIRTEXUSP_FAMILY;
-		_ircode_map = ircode_mapping.at("virtexusp");
+		if (model == "xcvu19p")
+			_ircode_map = ircode_mapping.at("virtexusp_vu19p");
+		else if (model == "xcvu7p")
+			_ircode_map = ircode_mapping.at("virtexusp_vu7p");
+		else
+			_ircode_map = ircode_mapping.at("virtexusp");
 	} else if (family.substr(0, 8) == "spartan3") {
 		_fpga_family = SPARTAN3_FAMILY;
 	} else if (family == "xcf") {
@@ -412,11 +469,12 @@ Xilinx::Xilinx(Jtag *jtag, const std::string &filename,
 	}
 
 	if (read_dna) {
-		if (_fpga_family == ARTIX_FAMILY || _fpga_family == KINTEXUS_FAMILY) {
+		if (_fpga_family == ARTIX_FAMILY || _fpga_family == KINTEXUS_FAMILY ||
+			_fpga_family == ZYNQ_FAMILY) {
 			uint64_t dna = Xilinx::fuse_dna_read();
 			printf("{\"dna\": \"0x%016" PRIx64 "\"}\n", dna);
 		} else {
-			throw std::runtime_error("Error: read_xadc only supported for Artix 7");
+			throw std::runtime_error("Error: read_dna only supported for 7-series style Xilinx FPGA");
 		}
 	}
 
@@ -638,12 +696,11 @@ void Xilinx::program(unsigned int offset, bool unprotect_flash)
 				&secondary_bit, reverse, _verbose);
 		}
 	} catch (std::exception &e) {
-		printError("FAIL");
 		if (bit)
 			delete bit;
 		if (secondary_bit)
 			delete secondary_bit;
-		return;
+		throw std::runtime_error(e.what());
 	}
 
 	if (_verbose) {
@@ -663,7 +720,6 @@ void Xilinx::program(unsigned int offset, bool unprotect_flash)
 		/* Check for BPI flash boards */
 		if (_is_bpi_board) {
 			program_bpi(bit, offset);
-			reset();
 		} else {
 			if (_flash_chips & PRIMARY_FLASH) {
 				select_flash_chip(PRIMARY_FLASH);
@@ -673,8 +729,6 @@ void Xilinx::program(unsigned int offset, bool unprotect_flash)
 				select_flash_chip(SECONDARY_FLASH);
 				program_spi(secondary_bit, _secondary_file_extension, offset, unprotect_flash);
 			}
-
-			reset();
 		}
 	} else {
 		if (_fpga_family == SPARTAN3_FAMILY)
@@ -814,7 +868,39 @@ void Xilinx::program_bpi(ConfigBitstreamParser *bit, unsigned int offset)
 		throw std::runtime_error("BPI flash programming failed");
 	}
 
+	/* Reset the board if skip_reset is not set */
+	post_flash_access();
+
 	printInfo("BPI flash programming complete");
+}
+
+bool Xilinx::dumpFlash_bpi(uint32_t base_addr, uint32_t len)
+{
+	if (!_bpi_flash) {
+		if (!load_bpi_bridge())
+			return false;
+	}
+	if (!_bpi_flash->detect()) {
+		printError("BPI flash detection failed");
+		return false;
+	}
+	if (len == 0)
+		len = _bpi_flash->capacity();
+	std::vector<uint8_t> buf(len);
+	printInfo("Reading BPI flash (slow, one word per USB round-trip)...");
+	if (!_bpi_flash->read(buf.data(), base_addr, len)) {
+		printError("BPI Flash read failed");
+		return false;
+	}
+	FILE *fd = fopen(_filename.c_str(), "wb");
+	if (!fd) {
+		printError("Can't open dump file");
+		return false;
+	}
+	fwrite(buf.data(), 1, len, fd);
+	fclose(fd);
+	printSuccess("BPI dump DONE");
+	return post_flash_access();
 }
 
 float Xilinx::get_spiOverJtag_version()
@@ -823,7 +909,19 @@ float Xilinx::get_spiOverJtag_version()
 	uint8_t jrx[7];
 	uint8_t rx[6];
 
-	_jtag->shiftIR(USER4, _irlen, Jtag::UPDATE_IR);
+	uint32_t idcode = _jtag->get_target_device_id();
+
+	/* Select the correct device and its associated USER4 register */
+	if (fpga_list[idcode].family == "virtexusp" & fpga_list[idcode].model == "xcvu7p") {
+		_jtag->shiftIR(get_ircode(_ircode_map, "USER4"), NULL, _irlen);
+	}
+	else if (fpga_list[idcode].family == "virtexusp" & fpga_list[idcode].model == "xcvu9p") {
+        	_jtag->shiftIR(get_ircode(_ircode_map, "USER4"), NULL, _irlen);
+	}
+	else {
+		_jtag->shiftIR(USER4, _irlen, Jtag::UPDATE_IR);
+	}
+
 	printf("jtag_chain_len: %d\n", _jtag_chain_len);
 	if (_jtag_chain_len > 1)
 		_jtag->shiftDR(jtx, NULL, _jtag_chain_len - 1, Jtag::SHIFT_DR);
@@ -846,11 +944,13 @@ void Xilinx::program_spi(ConfigBitstreamParser * bit, std::string extention,
 		throw std::runtime_error("called with null bitstream");
 	if (extention == "mcs") {
 		McsParser *parser = (McsParser *)bit;
-		SPIInterface::write(parser->getRecords(), unprotect_flash, true);
+		if (!FlashInterface::write(parser->getRecords(), unprotect_flash, true))
+			throw std::runtime_error("SPI flash write failed");
 	} else {
 		const uint8_t *data = bit->getData();
 		int length = bit->getLength() / 8;
-		SPIInterface::write(offset, data, length, unprotect_flash);
+		if (!FlashInterface::write(offset, data, length, unprotect_flash))
+			throw std::runtime_error("SPI flash write failed");
 	}
 }
 
@@ -1796,6 +1896,10 @@ void Xilinx::displayRegister(const std::string reg_name, const uint32_t reg_val)
 
 bool Xilinx::dumpFlash(uint32_t base_addr, uint32_t len)
 {
+	/* BPI parallel NOR dump (added: upstream dumpFlash lacks a BPI path) */
+	if (_is_bpi_board)
+		return dumpFlash_bpi(base_addr, len);
+
 	if (_fpga_family == XC95_FAMILY || _fpga_family == XCF_FAMILY) {
 		std::string buffer;
 		if (_fpga_family == XC95_FAMILY) {
@@ -1831,14 +1935,14 @@ bool Xilinx::dumpFlash(uint32_t base_addr, uint32_t len)
 
 	if (_flash_chips & PRIMARY_FLASH) {
 		select_flash_chip(PRIMARY_FLASH);
-		SPIInterface::set_filename(_filename);
-		if (!SPIInterface::dump(base_addr, len))
+		FlashInterface::set_filename(_filename);
+		if (!FlashInterface::dump(base_addr, len))
 			return false;
 	}
 	if (_flash_chips & SECONDARY_FLASH) {
 		select_flash_chip(SECONDARY_FLASH);
-		SPIInterface::set_filename(_secondary_filename);
-		if (!SPIInterface::dump(base_addr, len))
+		FlashInterface::set_filename(_secondary_filename);
+		if (!FlashInterface::dump(base_addr, len))
 			return false;
 	}
 
@@ -1847,14 +1951,26 @@ bool Xilinx::dumpFlash(uint32_t base_addr, uint32_t len)
 
 bool Xilinx::detect_flash()
 {
+	if (_is_bpi_board) {
+		if (!_bpi_flash) {
+			if (!load_bpi_bridge())
+				return false;
+		}
+		if (!_bpi_flash->detect()) {
+			printError("BPI flash detection failed");
+				return false;
+		}
+		return post_flash_access();
+	}
+
 	if (_flash_chips & PRIMARY_FLASH) {
 		select_flash_chip(PRIMARY_FLASH);
-		if (!SPIInterface::detect_flash())
+		if (!FlashInterface::detect_flash())
 			return false;
 	}
 	if (_flash_chips & SECONDARY_FLASH) {
 		select_flash_chip(SECONDARY_FLASH);
-		if (!SPIInterface::detect_flash())
+		if (!FlashInterface::detect_flash())
 			return false;
 	}
 	return true;
@@ -1864,12 +1980,12 @@ bool Xilinx::protect_flash(uint32_t len)
 {
 	if (_flash_chips & PRIMARY_FLASH) {
 		select_flash_chip(PRIMARY_FLASH);
-		if (!SPIInterface::protect_flash(len))
+		if (!FlashInterface::protect_flash(len))
 			return false;
 	}
 	if (_flash_chips & SECONDARY_FLASH) {
 		select_flash_chip(SECONDARY_FLASH);
-		if (!SPIInterface::protect_flash(len))
+		if (!FlashInterface::protect_flash(len))
 			return false;
 	}
 	return true;
@@ -1879,12 +1995,12 @@ bool Xilinx::unprotect_flash()
 {
 	if (_flash_chips & PRIMARY_FLASH) {
 		select_flash_chip(PRIMARY_FLASH);
-		if (!SPIInterface::unprotect_flash())
+		if (!FlashInterface::unprotect_flash())
 			return false;
 	}
 	if (_flash_chips & SECONDARY_FLASH) {
 		select_flash_chip(SECONDARY_FLASH);
-		if (!SPIInterface::unprotect_flash())
+		if (!FlashInterface::unprotect_flash())
 			return false;
 	}
 	return true;
@@ -1894,12 +2010,12 @@ bool Xilinx::set_quad_bit(bool set_quad)
 {
 	if (_flash_chips & PRIMARY_FLASH) {
 		select_flash_chip(PRIMARY_FLASH);
-		if (!SPIInterface::set_quad_bit(set_quad))
+		if (!FlashInterface::set_quad_bit(set_quad))
 			return false;
 	}
 	if (_flash_chips & SECONDARY_FLASH) {
 		select_flash_chip(SECONDARY_FLASH);
-		if (!SPIInterface::set_quad_bit(set_quad))
+		if (!FlashInterface::set_quad_bit(set_quad))
 			return false;
 	}
 	return true;
@@ -1909,12 +2025,12 @@ bool Xilinx::bulk_erase_flash()
 {
 	if (_flash_chips & PRIMARY_FLASH) {
 		select_flash_chip(PRIMARY_FLASH);
-		if (!SPIInterface::bulk_erase_flash())
+		if (!FlashInterface::bulk_erase_flash())
 			return false;
 	}
 	if (_flash_chips & SECONDARY_FLASH) {
 		select_flash_chip(SECONDARY_FLASH);
-		if (!SPIInterface::bulk_erase_flash())
+		if (!FlashInterface::bulk_erase_flash())
 			return false;
 	}
 	return true;

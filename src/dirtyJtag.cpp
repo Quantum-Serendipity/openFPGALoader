@@ -16,7 +16,6 @@
 #include "dirtyJtag.hpp"
 #include "display.hpp"
 
-using namespace std;
 
 #define DIRTYJTAG_VID 0x1209
 #define DIRTYJTAG_PID 0xC0CA
@@ -52,7 +51,6 @@ struct version_specific
 static version_specific v_options[4] ={{0, 240}, {0, 240}, {NO_READ, 496},
 									{NO_READ, 4000}};
 
-
 enum dirtyJtagSig {
 	SIG_TCK = (1 << 1),
 	SIG_TDI = (1 << 2),
@@ -62,47 +60,57 @@ enum dirtyJtagSig {
 	SIG_SRST = (1 << 6)
 };
 
-DirtyJtag::DirtyJtag(uint32_t clkHZ, int8_t verbose, uint16_t vid, uint16_t pid):
+DirtyJtag::DirtyJtag(uint32_t clkHz, int8_t verbose, uint16_t vid, uint16_t pid):
 			_verbose(verbose),
 			dev_handle(NULL), usb_ctx(NULL), _tdi(0), _tms(0), _version(0)
 {
 	int ret;
 
-	if (libusb_init(&usb_ctx) < 0) {
-		cerr << "libusb init failed" << endl;
-		throw std::exception();
-	}
+	if (libusb_init(&usb_ctx) < 0)
+		throw std::runtime_error("DirtyJtag: libusb init failed");
 
 	dev_handle = libusb_open_device_with_vid_pid(usb_ctx, vid, pid);
 	if (!dev_handle) {
-		cerr << "fails to open device" << endl;
 		libusb_exit(usb_ctx);
-		throw std::exception();
+		throw std::runtime_error("DirtyJtag: fails to open device");
 	}
 
 	ret = libusb_claim_interface(dev_handle, DIRTYJTAG_INTF);
 	if (ret) {
-		cerr << "libusb error while claiming DirtyJTAG interface" << endl;
 		libusb_close(dev_handle);
+		dev_handle = NULL;
 		libusb_exit(usb_ctx);
-		throw std::exception();
+		usb_ctx = NULL;
+		throw std::runtime_error("DirtyJtag: libusb error while claiming interface");
 	}
 
-	if (!getVersion())
-		throw std::runtime_error("Fail to get version");
+	if (!getVersion()) {
+		close_usb();
+		throw std::runtime_error("DirtyJtag: Fail to get version");
+	}
 
-	if (setClkFreq(clkHZ) < 0) {
-		cerr << "Fail to set frequency" << endl;
-		throw std::exception();
+	if (setClkFreq(clkHz) < 0) {
+		close_usb();
+		throw std::runtime_error("Fail to set frequency");
+	}
+}
+
+void DirtyJtag::close_usb()
+{
+	if (dev_handle) {
+		libusb_release_interface(dev_handle, DIRTYJTAG_INTF);
+		libusb_close(dev_handle);
+		dev_handle = NULL;
+	}
+	if (usb_ctx) {
+		libusb_exit(usb_ctx);
+		usb_ctx = NULL;
 	}
 }
 
 DirtyJtag::~DirtyJtag()
 {
-	if (dev_handle)
-		libusb_close(dev_handle);
-	if (usb_ctx)
-		libusb_exit(usb_ctx);
+	close_usb();
 }
 
 bool DirtyJtag::getVersion()
@@ -115,14 +123,14 @@ bool DirtyJtag::getVersion()
 	ret = libusb_bulk_transfer(dev_handle, DIRTYJTAG_WRITE_EP,
 					buf, 2, &actual_length, DIRTYJTAG_TIMEOUT);
 	if (ret < 0) {
-		cerr << "getVersion: usb bulk write failed " << ret << endl;
+		std::cerr << "getVersion: usb bulk write failed " << ret << std::endl;
 		return false;
 	}
 	do {
 		ret = libusb_bulk_transfer(dev_handle, DIRTYJTAG_READ_EP,
 						rx_buf, 64, &actual_length, DIRTYJTAG_TIMEOUT);
 		if (ret < 0) {
-			cerr << "getVersion: read: usb bulk read failed " << ret << endl;
+			std::cerr << "getVersion: read: usb bulk read failed " << ret << std::endl;
 			return false;
 		}
 	} while (actual_length == 0);
@@ -133,40 +141,40 @@ bool DirtyJtag::getVersion()
 	} else if (!strncmp("DJTAG3\n", (char*)rx_buf, 7)) {
 		_version = 3;
 	} else 	{
-		cerr << "dirtyJtag version unknown" << endl;
+		std::cerr << "dirtyJtag version unknown" << std::endl;
 		_version = 0;
 	}
 
 	return true;
 }
 
-int DirtyJtag::setClkFreq(uint32_t clkHZ)
+int DirtyJtag::setClkFreq(uint32_t clkHz)
 {
 	int actual_length;
-	int ret, req_freq = clkHZ;
+	int ret, req_freq = clkHz;
 
-	if (clkHZ > 16000000) {
-		printWarn("DirtyJTAG probe limited to 16000kHz");
-		clkHZ = 16000000;
+	if (clkHz > 16000000) {
+		printWarn("DirtyJTAG probe limited to 16000 kHz");
+		clkHz = 16000000;
 	}
 
-	_clkHZ = clkHZ;
+	_clkHZ = clkHz;
 
 	printInfo("Jtag frequency : requested " + std::to_string(req_freq) +
-			"Hz -> real " + std::to_string(clkHZ) + "Hz");
+			" Hz -> real " + std::to_string(clkHz) + " Hz");
 
 	uint8_t buf[] = {CMD_FREQ,
-					static_cast<uint8_t>(0xff & ((clkHZ / 1000) >> 8)),
-					static_cast<uint8_t>(0xff & ((clkHZ / 1000)     )),
+					static_cast<uint8_t>(0xff & ((clkHz / 1000) >> 8)),
+					static_cast<uint8_t>(0xff & ((clkHz / 1000)     )),
 					CMD_STOP};
 	ret = libusb_bulk_transfer(dev_handle, DIRTYJTAG_WRITE_EP,
 					buf, 4, &actual_length, DIRTYJTAG_TIMEOUT);
 	if (ret < 0) {
-		cerr << "setClkFreq: usb bulk write failed " << ret << endl;
+		std::cerr << "setClkFreq: usb bulk write failed " << ret << std::endl;
 		return -EXIT_FAILURE;
 	}
 
-	return clkHZ;
+	return clkHz;
 }
 
 int DirtyJtag::writeTMS(const uint8_t *tms, uint32_t len,
@@ -205,7 +213,7 @@ int DirtyJtag::writeTMS(const uint8_t *tms, uint32_t len,
 										   buf, buffer_idx, &actual_length,
 										   DIRTYJTAG_TIMEOUT);
 			if (ret < 0) {
-				cerr << "writeTMS: usb bulk write failed " << ret << endl;
+				std::cerr << "writeTMS: usb bulk write failed " << ret << std::endl;
 				return -EXIT_FAILURE;
 			}
 			buffer_idx = 0;
@@ -228,7 +236,7 @@ int DirtyJtag::toggleClk(__attribute__((unused)) uint8_t tms,
 		int ret = libusb_bulk_transfer(dev_handle, DIRTYJTAG_WRITE_EP,
 				buf, 4, &actual_length, DIRTYJTAG_TIMEOUT);
 		if (ret < 0) {
-			cerr << "toggleClk: usb bulk write failed " << ret << endl;
+			std::cerr << "toggleClk: usb bulk write failed " << ret << std::endl;
 			return -EXIT_FAILURE;
 		}
 		clk_len -= buf[2];
@@ -294,11 +302,11 @@ int DirtyJtag::writeTDI(const uint8_t *tx, uint8_t *rx, uint32_t len, bool end)
 				(unsigned char *)tx_buf, xfer_len,
 				&actual_length, DIRTYJTAG_TIMEOUT);
 		if ((ret < 0) || (actual_length != xfer_len)) {
-			cerr << "writeTDI: fill: usb bulk write failed " << ret <<
-				"actual length: " << actual_length << endl;
+			std::cerr << "writeTDI: fill: usb bulk write failed " << ret <<
+				"actual length: " << actual_length << std::endl;
 			return EXIT_FAILURE;
 		}
-		// cerr << actual_length << ", " << bit_to_send << endl;
+		// std::cerr << actual_length << ", " << bit_to_send << std::endl;
 
 		if (rx || (_version <= 1)) {
 			const int transfer_length = (bit_to_send > 255) ? byte_to_send : 32;
@@ -306,7 +314,7 @@ int DirtyJtag::writeTDI(const uint8_t *tx, uint8_t *rx, uint32_t len, bool end)
 				ret = libusb_bulk_transfer(dev_handle, DIRTYJTAG_READ_EP,
 					rx_buf, transfer_length, &actual_length, DIRTYJTAG_TIMEOUT);
 				if (ret < 0) {
-					cerr << "writeTDI: read: usb bulk read failed " << ret << endl;
+					std::cerr << "writeTDI: read: usb bulk read failed " << ret << std::endl;
 					return EXIT_FAILURE;
 				}
 			} while (actual_length == 0);
@@ -320,11 +328,11 @@ int DirtyJtag::writeTDI(const uint8_t *tx, uint8_t *rx, uint32_t len, bool end)
 			}
 			/* Last xfer:
 			 * if bit_to_send is not a multiple of 8bits a shift must
-			 * be applied to align rigth the last Byte
+			 * be applied to align right the last Byte
 			 */
 			if (bit_to_send < max_bit_transfer_length) {
-				const uint32_t b = (bit_to_send >> 3) << 3; // floor
-				if (b < bit_to_send) { // difference ?
+				const uint32_t b = (bit_to_send >> 3) << 3;  // floor
+				if (b < bit_to_send) {  // difference ?
 					const uint32_t diff = bit_to_send - b;
 					const uint8_t t = rx_ptr[(rx_cnt-1) >> 3] >> (8 - diff);
 					rx_ptr[(rx_cnt - 1) >> 3] = t;
@@ -336,7 +344,7 @@ int DirtyJtag::writeTDI(const uint8_t *tx, uint8_t *rx, uint32_t len, bool end)
 		tx_ptr += byte_to_send;
 	}
 
-	/* this step exist only with [D|I]R_SHIFT */
+	/* Final single-bit step used only for DR/IR SHIFT end transitions. */
 	if (end) {
 		int pos = len-1;
 		uint8_t sig;
@@ -360,7 +368,7 @@ int DirtyJtag::writeTDI(const uint8_t *tx, uint8_t *rx, uint32_t len, bool end)
 			if (libusb_bulk_transfer(dev_handle, DIRTYJTAG_WRITE_EP,
 									 buf, 8, &actual_length,
 									 DIRTYJTAG_TIMEOUT) < 0) {
-				cerr << "writeTDI: last bit error: usb bulk write failed 1" << endl;
+				std::cerr << "writeTDI: last bit error: usb bulk write failed 1" << std::endl;
 				return -EXIT_FAILURE;
 			}
 
@@ -368,7 +376,7 @@ int DirtyJtag::writeTDI(const uint8_t *tx, uint8_t *rx, uint32_t len, bool end)
 				if (libusb_bulk_transfer(dev_handle, DIRTYJTAG_READ_EP,
 											&sig, 1, &actual_length,
 											DIRTYJTAG_TIMEOUT) < 0) {
-					cerr << "writeTDI: last bit error: usb bulk read failed" << endl;
+					std::cerr << "writeTDI: last bit error: usb bulk read failed" << std::endl;
 					return -EXIT_FAILURE;
 				}
 			} while (actual_length == 0);
@@ -381,13 +389,13 @@ int DirtyJtag::writeTDI(const uint8_t *tx, uint8_t *rx, uint32_t len, bool end)
 			if (libusb_bulk_transfer(dev_handle, DIRTYJTAG_WRITE_EP,
 									 buf, 4, &actual_length,
 									 DIRTYJTAG_TIMEOUT) < 0) {
-				cerr << "writeTDI: last bit error: usb bulk write failed 2" << endl;
+				std::cerr << "writeTDI: last bit error: usb bulk write failed 2" << std::endl;
 				return -EXIT_FAILURE;
 			}
 
 		} else {
 			if (toggleClk(_tms, _tdi, 1)) {
-				cerr << "writeTDI: last bit error" << endl;
+				std::cerr << "writeTDI: last bit error" << std::endl;
 				return -EXIT_FAILURE;
 			}
 		}
@@ -395,8 +403,8 @@ int DirtyJtag::writeTDI(const uint8_t *tx, uint8_t *rx, uint32_t len, bool end)
 	return EXIT_SUCCESS;
 }
 
-/* GPIOs */
-/* Read GPIOs */
+/* GPIO helpers */
+/* Read GPIO signal state */
 uint8_t DirtyJtag::gpio_get()
 {
 	int actual_length;
@@ -437,12 +445,13 @@ bool DirtyJtag::_set_gpio_level(uint8_t gpio, uint8_t val)
 	return true;
 }
 
-/* update selected gpio */
+/* Set selected GPIO bits */
 bool DirtyJtag::gpio_set(uint8_t gpio)
 {
 	return _set_gpio_level(gpio, gpio);
 }
 
+/* Clear selected GPIO bits */
 bool DirtyJtag::gpio_clear(uint8_t gpio)
 {
 	return _set_gpio_level(gpio, 0);

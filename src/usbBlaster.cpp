@@ -6,6 +6,7 @@
 #include <libusb.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <iostream>
 #include <map>
@@ -19,7 +20,6 @@
 #include "fx2_ll.hpp"
 #include "usbBlaster.hpp"
 
-using namespace std;
 
 #define DO_READ  (1 << 6)
 #define DO_WRITE (0 << 6)
@@ -42,7 +42,8 @@ using namespace std;
 UsbBlaster::UsbBlaster(const cable_t &cable, const std::string &firmware_path,
 		int8_t verbose):
 			_verbose(verbose > 1), _nb_bit(0),
-			_curr_tms(0), _buffer_size(64)
+			_curr_tms(0), _buffer_size(64),
+			_passive_serial_mode(false)
 {
 	if (cable.pid == 0x6001 || cable.pid == 0x6002 || cable.pid == 0x6003)
 #ifdef ENABLE_USB_BLASTERI
@@ -50,8 +51,8 @@ UsbBlaster::UsbBlaster(const cable_t &cable, const std::string &firmware_path,
 #else
 		throw std::runtime_error("usb-blasterI: Not build");
 #endif
-#ifdef ENABLE_USB_BLASTERII
 	else if (cable.pid == 0x6810 || cable.pid == 0x6010)
+#ifdef ENABLE_USB_BLASTERII
 		ll_driver = new UsbBlasterII(firmware_path);
 #else
 		throw std::runtime_error("usb-blasterII: Not build");
@@ -86,7 +87,8 @@ UsbBlaster::UsbBlaster(const cable_t &cable, const std::string &firmware_path,
 
 UsbBlaster::~UsbBlaster()
 {
-	_in_buf[_nb_bit++] = 0;
+	if (!_passive_serial_mode)
+		_in_buf[_nb_bit++] = 0;
 	flush();
 	free(_in_buf);
 }
@@ -306,6 +308,123 @@ int UsbBlaster::flush()
 	return write(false, 0);
 }
 
+int UsbBlaster::setPassiveSerialPins(bool dclk, bool nconfig, bool data0)
+{
+	uint8_t value = DEFAULT | DO_WRITE | DO_BITBB;
+	if (dclk)
+		value |= _tck_pin;
+	if (nconfig)
+		value |= _tms_pin;
+	if (data0)
+		value |= _tdi_pin;
+
+	return ll_driver->write(&value, 1, NULL, 0);
+}
+
+bool UsbBlaster::readConfDone()
+{
+	uint8_t value = DEFAULT | DO_READ | DO_BITBB | _tms_pin;
+	uint8_t input = 0;
+	int ret = ll_driver->write(&value, 1, &input, 1);
+	if (ret <= 0)
+		throw std::runtime_error("Failed to read CONF_DONE");
+
+	return (input & 0x01) != 0;
+}
+
+int UsbBlaster::shiftPassiveSerial(const uint8_t *data, uint32_t length)
+{
+	uint8_t buffer[64];
+	uint32_t offset = 0;
+
+	while (offset < length) {
+		uint32_t chunk = length - offset;
+		if (chunk > 63)
+			chunk = 63;
+
+		buffer[0] = DO_SHIFT | DO_WRITE | static_cast<uint8_t>(chunk);
+		memcpy(&buffer[1], &data[offset], chunk);
+		int ret = ll_driver->write(buffer, static_cast<int>(chunk + 1), NULL, 0);
+		if (ret != static_cast<int>(chunk + 1))
+			return -1;
+		offset += chunk;
+	}
+
+	return length;
+}
+
+int UsbBlaster::clockPassiveSerial(uint32_t cycles)
+{
+	uint8_t buffer[64];
+	uint8_t value = DEFAULT | DO_WRITE | DO_BITBB | _tms_pin;
+	uint32_t remaining = cycles;
+
+	while (remaining != 0) {
+		uint32_t chunk = remaining;
+		if (chunk > 31)
+			chunk = 31;
+
+		for (uint32_t i = 0; i < chunk; i++) {
+			buffer[2 * i] = value;
+			buffer[2 * i + 1] = value | _tck_pin;
+		}
+		buffer[2 * chunk] = value;
+
+		int length = static_cast<int>(2 * chunk + 1);
+		if (ll_driver->write(buffer, length, NULL, 0) != length)
+			return -1;
+		remaining -= chunk;
+	}
+
+	return static_cast<int>(cycles);
+}
+
+void UsbBlaster::programPassiveSerial(const uint8_t *data, uint32_t length)
+{
+	if (data == NULL || length == 0)
+		throw std::runtime_error("Passive serial bitstream is empty");
+	if (flush() < 0)
+		throw std::runtime_error("Failed to flush USB-Blaster");
+
+	/*
+	 * The normal destructor command drives TMS low, which is nCONFIG in
+	 * passive serial mode and would immediately reset the configured FPGA.
+	 */
+	_passive_serial_mode = true;
+
+	try {
+		if (setPassiveSerialPins(false, false, false) != 1)
+			throw std::runtime_error("Failed to assert nCONFIG");
+		usleep(5);
+
+		if (setPassiveSerialPins(false, true, false) != 1)
+			throw std::runtime_error("Failed to release nCONFIG");
+
+		/*
+		 * nSTATUS is not available. Assume device will be ready after a small delay.
+		 */
+		usleep(2000);
+		if (readConfDone())
+			throw std::runtime_error("CONF_DONE did not clear after nCONFIG");
+
+		if (shiftPassiveSerial(data, length) != static_cast<int>(length))
+			throw std::runtime_error("Failed to write passive serial data");
+
+		if (!readConfDone())
+			throw std::runtime_error("CONF_DONE is low after passive serial programming");
+
+		/* Complete device initialization after CONF_DONE is asserted. */
+		if (clockPassiveSerial(10) != 10)
+			throw std::runtime_error("Failed to write passive serial startup clocks");
+	} catch (...) {
+		setPassiveSerialPins(false, true, false);
+		throw;
+	}
+
+	if (setPassiveSerialPins(false, true, false) != 1)
+		throw std::runtime_error("Failed to leave passive serial pins idle");
+}
+
 /* simply call write and return buffer
  */
 int UsbBlaster::writeByte(uint8_t *tdo, int nb_byte)
@@ -358,10 +477,8 @@ UsbBlasterI::UsbBlasterI()
 {
 	int ret;
 	_ftdi = ftdi_new();
-	if (_ftdi == NULL) {
-		cout << "open_device: failed to initialize ftdi" << endl;
-		throw std::exception();
-	}
+	if (_ftdi == NULL)
+		throw std::runtime_error("open_device: failed to initialize ftdi");
 
 	 ret = ftdi_usb_open(_ftdi, 0x09fb, 0x6001);
 	if (ret < 0) {
@@ -446,7 +563,7 @@ int UsbBlasterI::write(uint8_t *wr_buf, int wr_len,
  * USB Blash II specific implementation
  */
 
-UsbBlasterII::UsbBlasterII(const string &firmware_path)
+UsbBlasterII::UsbBlasterII(const std::string &firmware_path)
 {
 	std::string fpath;
 	uint8_t buf[5];
@@ -462,7 +579,7 @@ UsbBlasterII::UsbBlasterII(const string &firmware_path)
 	else
 		fpath = firmware_path;
 	fx2 = new FX2_ll(0x09fb, 0x6810, 0x09fb, 0x6010, fpath);
-	if (!fx2->read_ctrl(0x94, 0, buf, 5)) {
+	if (!fx2->read_ctrl(0x94, 0, buf, 5, 0x0000)) {
 		throw std::runtime_error("Unable to read firmware version.");
 	}
 	printInfo("USB-Blaster II firmware version: " + std::string((char *)buf));

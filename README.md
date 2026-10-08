@@ -12,7 +12,7 @@
   <strong><a href="https://trabucayre.github.io/openFPGALoader/guide/first-steps.html">First steps</a> • <a href="https://trabucayre.github.io/openFPGALoader/guide/install.html">Install</a> • <a href="https://trabucayre.github.io/openFPGALoader/guide/troubleshooting.html">Troubleshooting</a></strong> • <a href="https://trabucayre.github.io/openFPGALoader/guide/advanced.html">Advanced usage</a>
 </p>
 
-Universal utility for programming FPGAs. Compatible with many boards, cables and FPGA from major manufacturers (Xilinx, Altera/Intel, Lattice, Gowin, Efinix, Anlogic, Cologne Chip). openFPGALoader works on Linux, Windows and macOS.
+Universal utility for programming FPGAs. Compatible with many boards, cables and FPGA from major manufacturers (Xilinx, Altera/Intel, Lattice, Gowin, Efinix, Anlogic, Cologne Chip). openFPGALoader works on Linux, Windows, macOS and OpenBSD.
 
 Not sure if your hardware is supported? Check the hardware compatibility lists:
 
@@ -70,12 +70,15 @@ openFPGALoader -- a program to flash FPGA
       --cable-index arg         probe index (FTDI and cmsisDAP)
       --busdev-num arg          select a probe by it bus and device number
                                 (bus_num:device_addr)
-      --ftdi-serial arg         FTDI chip serial number
+      --usb-serial-num arg      USB iSerial (FTDI chip serial number or ESP32
+                                iSerialNumber substring)
+      --ftdi-serial arg         FTDI chip serial number (Deprecated)
       --ftdi-channel arg        FTDI chip channel number (channels 0-3 map to
                                 A-D)
   -d, --device arg              device to use (/dev/ttyUSBx)
       --detect                  detect FPGA, add -f to show connected flash
       --dfu                     DFU mode
+      --passive-serial          USB-Blaster passive serial mode      
       --dump-flash              Dump flash mode
       --bulk-erase              Bulk erase flash
       --enable-quad             Enable quad mode for SPI Flash
@@ -105,7 +108,8 @@ openFPGALoader -- a program to flash FPGA
                                 non volatile memory (default: 0)
       --pins arg                pin config TDI:TDO:TCK:TMS or
                                 MOSI:MISO:SCK:CS[:HOLDN:WPN]
-      --probe-firmware arg      firmware for JTAG probe (usbBlasterII)
+      --probe-firmware arg      firmware for JTAG probe
+                                (usbBlasterII/xilinxPlatformCableUsb)
       --protect-flash arg       protect SPI flash area
       --quiet                   Produce quiet output (no progress bar)
   -r, --reset                   reset FPGA after operations
@@ -119,6 +123,8 @@ openFPGALoader -- a program to flash FPGA
   -v, --verbose                 Produce verbose output
       --verbose-level arg       verbose level -1: quiet, 0: normal,
                                 1:verbose, 2:debug
+      --force-terminal-mode     force progress bar output as if connected to
+                                a terminal
   -h, --help                    Give this help list
       --verify                  Verify write operation (SPI Flash only)
       --xvc                     Xilinx Virtual Cable Functions
@@ -130,7 +136,8 @@ openFPGALoader -- a program to flash FPGA
   -X, --read-xadc               Read XADC (Xilinx FPGA only)
       --read-register arg       Read Status Register(Xilinx FPGA only)
       --user-flash arg          User flash file (Gowin LittleBee FPGA only)
-  -V, --Version                 Print program version
+  -V, --version                 Print program version
+      --Version                 Print program version (Deprecated)
 
 Mandatory or optional arguments to long options are also mandatory or optional
 for any corresponding short options.

@@ -16,7 +16,7 @@
 #include "display.hpp"
 #include "spiFlash.hpp"
 #include "spiFlashdb.hpp"
-#include "spiInterface.hpp"
+#include "flashInterface.hpp"
 
 /* read/write status register : 0B addr + 0 dummy */
 #define FLASH_WRSR     0x01
@@ -84,7 +84,7 @@
 /* Global Block Protection unlock */
 #define FLASH_ULBPR 0x98
 
-SPIFlash::SPIFlash(SPIInterface *spi, bool unprotect, int8_t verbose):
+SPIFlash::SPIFlash(FlashInterface *spi, bool unprotect, int8_t verbose):
 	_spi(spi), _verbose(verbose), _jedec_id(0),
 	_flash_model(NULL), _unprotect(unprotect), _must_relock(false),
 	_status(0)
@@ -98,7 +98,8 @@ int SPIFlash::bulk_erase(bool verbose, bool skip_bp_check)
 {
 	int ret = 0, ret2 = 0;
 	uint8_t bp = 0;
-	uint32_t timeout=1000000;
+    // timeout my be selected on flash size 
+	uint32_t timeout=2000000;
 	if (!skip_bp_check) {
 		if (verbose)
 			printInfo("Check Flash Protection: ", false);
@@ -468,9 +469,10 @@ bool SPIFlash::erase_and_prog(const std::vector<FlashDataSection> &sections, boo
 	uint32_t len = 0, flash_len;
 	uint32_t base_addr = 0;
 	/* For full erase and to check BP: consider the full flash size */
-	if (full_erase) {
+	if (_flash_model && full_erase) {
 		flash_len = _flash_model->nr_sector * 0x10000;
 	} else { /* not a full erase: consider bottom base_addr and upper address */
+		full_erase = false;
 		base_addr = sections.front().getStartAddr();
 		flash_len = sections.back().getCurrentAddr() - base_addr;
 	}
@@ -489,12 +491,8 @@ bool SPIFlash::erase_and_prog(const std::vector<FlashDataSection> &sections, boo
 			return false;
 	} else {
 		printInfo("Erase Flash: ", false);
-		if (sectors_erase(base_addr, len) == -1) {
-			printError("FAIL");
-			return -1;
-		} else {
-			printSuccess("DONE");
-		}
+		if (sectors_erase(base_addr, len) == -1)
+			return false;
 	}
 
 	ProgressBar progress("Writing", len, 50, _verbose < 0);
@@ -511,7 +509,7 @@ bool SPIFlash::erase_and_prog(const std::vector<FlashDataSection> &sections, boo
 				size = 1;
 			}
 			if (write_page(base_addr + addr, ptr, size) == -1)
-				return -1;
+				return false;
 			progress.display(len_done);
 		}
 	}

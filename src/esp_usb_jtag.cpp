@@ -113,7 +113,6 @@ this description is a copy from openocd/src/jtag/drivers/esp_usb_jtag.c
 #include "esp_usb_jtag.hpp"
 #include "display.hpp"
 
-using namespace std;
 
 #define ESPUSBJTAG_VID 0x303A
 #define ESPUSBJTAG_PID 0x1001
@@ -246,33 +245,80 @@ static uint16_t esp_usb_target_chip_id = 0; /* not applicable for FPGA, they hav
 
 /* end copy from openocd */
 
-esp_usb_jtag::esp_usb_jtag(uint32_t clkHZ, int8_t verbose, int vid = ESPUSBJTAG_VID, int pid = ESPUSBJTAG_PID):
+esp_usb_jtag::esp_usb_jtag(uint32_t clkHZ, int8_t verbose,
+			int vid = ESPUSBJTAG_VID, int pid = ESPUSBJTAG_PID,
+			uint8_t bus_addr = 0, uint8_t dev_addr = 0,
+			const std::string &serial = ""):
 			_verbose(verbose > 1),
 			dev_handle(NULL), usb_ctx(NULL), _tdi(0), _tms(0),
 			/* Default for emard firmware. */
 			_esp_usb_jtag_caps(0x2000), _write_ep(0x02),
 			_vid(ESPUSBJTAG_VID), _pid(ESPUSBJTAG_PID)
 {
+	libusb_device **devs = NULL;
 	int ret;
 	char mess[256];
 
 	if (libusb_init(&usb_ctx) < 0) {
-		cerr << "libusb init failed" << endl;
+		std::cerr << "libusb init failed" << std::endl;
 		throw std::exception();
 	}
 
-	dev_handle = libusb_open_device_with_vid_pid(usb_ctx,
-		_vid, _pid);
-	if (!dev_handle) {
-		_esp_usb_jtag_caps = 0x030A;
-		_write_ep = 0x03;
-		_pid = 0x1002;
-		dev_handle = libusb_open_device_with_vid_pid(usb_ctx,
-			_vid, _pid);
+	ssize_t cnt = libusb_get_device_list(usb_ctx, &devs);
+	if (cnt < 0) {
+		std::cerr << "esp_usb_jtag: libusb_get_device_list failed: "
+		     << libusb_error_name(static_cast<int>(cnt)) << std::endl;
+		libusb_exit(usb_ctx);
+		throw std::exception();
 	}
+
+	for (ssize_t i = 0; i < cnt; i++) {
+		libusb_device *dev = devs[i];
+		struct libusb_device_descriptor desc;
+		if (libusb_get_device_descriptor(dev, &desc) < 0)
+			continue;
+		if (desc.idVendor != vid || desc.idProduct != pid)
+			continue;
+		/* bus/device filter (only when both are user-supplied) */
+		if (bus_addr != 0 && dev_addr != 0 &&
+				(libusb_get_bus_number(dev) != bus_addr ||
+				 libusb_get_device_address(dev) != dev_addr))
+			continue;
+
+		/* serial filter */
+		if (!serial.empty()) {
+			libusb_device_handle *probe = NULL;
+			if (libusb_open(dev, &probe) < 0)
+				continue;
+			unsigned char raw[256] = {0};
+			int n = 0;
+			if (desc.iSerialNumber)
+				n = libusb_get_string_descriptor_ascii(probe,
+						desc.iSerialNumber, raw, sizeof(raw));
+			libusb_close(probe);
+			if (n <= 0)
+				continue;
+			const std::string found(reinterpret_cast<char *>(raw), n);
+
+			if (found.find(serial) == std::string::npos)
+				continue;
+		}
+
+		if (libusb_open(dev, &dev_handle) == 0)
+			break;
+		dev_handle = NULL;
+	}
+	libusb_free_device_list(devs, 1);
+
 	if (!dev_handle) {
-		snprintf(mess, 256, "fails to open esp_usb_jtag device");
-		printError(mess);
+		std::cerr << "fails to open esp_usb_jtag device vid:pid 0x"
+		     << std::hex << vid << ":0x" << pid;
+		if (bus_addr || dev_addr)
+			std::cerr << " bus:dev " << std::dec << static_cast<int>(bus_addr)
+			     << ":" << static_cast<int>(dev_addr);
+		if (!serial.empty())
+			std::cerr << " serial '" << serial << "'";
+		std::cerr << std::endl;
 		libusb_exit(usb_ctx);
 		throw std::exception();
 	}
@@ -282,7 +328,7 @@ esp_usb_jtag::esp_usb_jtag(uint32_t clkHZ, int8_t verbose, int vid = ESPUSBJTAG_
 
 	ret = libusb_claim_interface(dev_handle, ESPUSBJTAG_INTF);
 	if (ret) {
-		cerr << "libusb error while claiming esp_usb_jtag interface of device vid:pid 0x" << std::hex << vid << ":0x" << std::hex << pid << endl;
+		std::cerr << "libusb error while claiming esp_usb_jtag interface of device vid:pid 0x" << std::hex << vid << ":0x" << std::hex << pid << std::endl;
 		libusb_close(dev_handle);
 		libusb_exit(usb_ctx);
 		throw std::exception();
@@ -293,7 +339,7 @@ esp_usb_jtag::esp_usb_jtag(uint32_t clkHZ, int8_t verbose, int vid = ESPUSBJTAG_
 		throw std::runtime_error("Fail to get version");
 
 	if (setClkFreq(clkHZ) < 0) {
-		cerr << "Fail to set frequency" << endl;
+		std::cerr << "Fail to set frequency" << std::endl;
 		throw std::exception();
 	}
 }
@@ -331,8 +377,8 @@ bool esp_usb_jtag::getVersion()
 	}
 
 	for(int i = 0; i < jtag_caps_read_len; i++)
-	  cerr << " 0x" << std::hex << (int)(jtag_caps_desc[i]);
-	cerr << endl;
+	  std::cerr << " 0x" << std::hex << (int)(jtag_caps_desc[i]);
+	std::cerr << std::endl;
 	
 	_base_speed_khz = UINT32_MAX;
 	_div_min = 1;
@@ -342,20 +388,20 @@ bool esp_usb_jtag::getVersion()
 		VEND_DESCR_BUILTIN_JTAG_CAPS ? JTAG_BUILTIN_DESCR_START_OFF : JTAG_EUB_DESCR_START_OFF;
 
 	if (p + sizeof(struct jtag_proto_caps_hdr) > (unsigned int)jtag_caps_read_len) {
-		cerr << "esp_usb_jtag: not enough data to get header" << endl;
+		std::cerr << "esp_usb_jtag: not enough data to get header" << std::endl;
 		// goto out;
 	}
 
 	struct jtag_proto_caps_hdr *hdr = (struct jtag_proto_caps_hdr *)&jtag_caps_desc[p];
 	if (hdr->proto_ver != JTAG_PROTO_CAPS_VER) {
-		cerr << "esp_usb_jtag: unknown jtag_caps descriptor version 0x" << std::hex
-			<< hdr->proto_ver << endl;
+		std::cerr << "esp_usb_jtag: unknown jtag_caps descriptor version 0x" << std::hex
+			<< hdr->proto_ver << std::endl;
 		// goto out;
 	}
 	if (hdr->length > jtag_caps_read_len) {
-		cerr << "esp_usb_jtag: header length (" << hdr->length
+		std::cerr << "esp_usb_jtag: header length (" << hdr->length
 			 << ") bigger then max read bytes (" << jtag_caps_read_len
-			 << ")" << endl;
+			 << ")" << std::endl;
 		// goto out;
 	}
 
@@ -367,7 +413,7 @@ bool esp_usb_jtag::getVersion()
 		struct jtag_gen_hdr *dhdr = (struct jtag_gen_hdr *)&jtag_caps_desc[p];
 		if (dhdr->type == JTAG_PROTO_CAPS_SPEED_APB_TYPE) {
 			if (p + sizeof(struct jtag_proto_caps_speed_apb) < hdr->length) {
-				cerr << "esp_usb_jtag: not enough data to get caps speed" << endl;
+				std::cerr << "esp_usb_jtag: not enough data to get caps speed" << std::endl;
 				return false;
 			}
 			struct jtag_proto_caps_speed_apb *spcap = (struct jtag_proto_caps_speed_apb *)dhdr;
@@ -378,15 +424,15 @@ bool esp_usb_jtag::getVersion()
 			/* TODO: mark in priv that this is apb-derived and as such may change if apb
 			 * ever changes? */
 		} else {
-			cerr << "esp_usb_jtag: unknown caps type 0x" << dhdr->type << endl;;
+			std::cerr << "esp_usb_jtag: unknown caps type 0x" << dhdr->type << std::endl;;
 		}
 		p += dhdr->length;
 	}
 	if (priv->base_speed_khz == UINT32_MAX) {
-		cerr << "esp_usb_jtag: No speed caps found... using sane-ish defaults." << endl;
+		std::cerr << "esp_usb_jtag: No speed caps found... using sane-ish defaults." << std::endl;
 		_base_speed_khz = 1000;
 	}
-	cerr << "esp_usb_jtag: Device found. Base speed " << std::dec << _base_speed_khz << " KHz, div range " << (int)_div_min << " to " << (int)_div_max << endl;
+	std::cerr << "esp_usb_jtag: Device found. Base speed " << std::dec << _base_speed_khz << " KHz, div range " << (int)_div_min << " to " << (int)_div_max << std::endl;
 
 	_version = 1; // currently only protocol version 1 exists
 
@@ -434,7 +480,7 @@ int esp_usb_jtag::setClkFreq(uint32_t clkHZ)
 	/*timeout ms*/      ESPUSBJTAG_TIMEOUT_MS);
 
 	if (ret != 0) {
-		cerr << "setClkFreq: usb bulk write failed " << ret << endl;
+		std::cerr << "setClkFreq: usb bulk write failed " << ret << std::endl;
 		return -EXIT_FAILURE;
 	}
 
@@ -503,7 +549,7 @@ int esp_usb_jtag::writeTMS(const uint8_t *tms, uint32_t len, bool flush_buffer,
 			return -EXIT_FAILURE;
 		}
 		if (_verbose)
-			cerr << "tms" << endl;
+			std::cerr << "tms" << std::endl;
 	}
 
 	return len;
@@ -579,11 +625,11 @@ int esp_usb_jtag::setio(int srst, int tms, int tdi, int tck)
 	/*timeout ms*/	ESPUSBJTAG_TIMEOUT_MS);
 
 	if (ret != 0) {
-		cerr << "setio: control write failed " << ret << endl;
+		std::cerr << "setio: control write failed " << ret << std::endl;
 		return -EXIT_FAILURE;
 	}
 	if (_verbose)
-		cerr << "setio 0x" << std::hex << wvalue << endl;
+		std::cerr << "setio 0x" << std::hex << wvalue << std::endl;
 	return 0;
 }
 
@@ -708,12 +754,12 @@ int esp_usb_jtag::writeTDI(const uint8_t *tx, uint8_t *rx, uint32_t len, bool en
 	// last byte in buf will have data in both nibbles, no flush
 	// exec order: high-nibble-first, low-nibble-second
 	if (_verbose) {
-		cerr << "is high nibble=" << (int)is_high_nibble << endl;
+		std::cerr << "is high nibble=" << (int)is_high_nibble << std::endl;
 		//int bits_in_tx_buf = 0;
 		for(uint32_t i = 0; i < (len + 7) >> 3; i++)
-			cerr << " " << std::hex << (int)tdi[i];
-		cerr << endl;
-		cerr << "tdi_bits ";
+			std::cerr << " " << std::hex << (int)tdi[i];
+		std::cerr << std::endl;
+		std::cerr << "tdi_bits ";
 	}
 
 	for (uint32_t pos = 0; pos < len; pos += xfer_len) {
@@ -739,7 +785,7 @@ int esp_usb_jtag::writeTDI(const uint8_t *tx, uint8_t *rx, uint32_t len, bool en
 			uint32_t curr_pos = pos + i;
 			_tdi = (tdi[curr_pos >> 3] >> (curr_pos & 7)) & 1; // get i'th bit from rx
 			if (_verbose)
-				cerr << (int)_tdi;
+				std::cerr << (int)_tdi;
 			if (end && curr_pos == len - 1)
 				_tms = 1;
 			const uint8_t cmd = CMD_CLK(tdo, _tdi, _tms); // with TDO capture
@@ -768,7 +814,7 @@ int esp_usb_jtag::writeTDI(const uint8_t *tx, uint8_t *rx, uint32_t len, bool en
 			return -EXIT_FAILURE;
 		}
 		if (_verbose)
-			cerr << "writeTDI write 0x" << tx_buffer_idx << " bytes" << endl;
+			std::cerr << "writeTDI write 0x" << tx_buffer_idx << " bytes" << std::endl;
 		if (rx) {
 			flush(); // must flush before reading
 			// TODO support odd len for TDO
@@ -788,7 +834,7 @@ int esp_usb_jtag::writeTDI(const uint8_t *tx, uint8_t *rx, uint32_t len, bool en
 					nb_try++;
 				} while (nb_try < 3 && ret == 0);
 				if (_verbose)
-					cerr << "writeTDI read " << std::to_string(ret) << endl;
+					std::cerr << "writeTDI read " << std::to_string(ret) << std::endl;
 				if (read_byte_len != ret) {
 					snprintf(mess, 256, "writeTDI: usb bulk read expected=%d received=%d", read_byte_len, ret);
 					printError(mess);
