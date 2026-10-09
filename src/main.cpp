@@ -1319,6 +1319,36 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 					"'); use --file-type to override the extension");
 				return -1;
 			}
+			static const char *const flash_opts[] = {
+				"write-flash", "external-flash", "dump-flash", "bulk-erase",
+				"protect-flash", "unprotect-flash", "enable-quad",
+				"disable-quad", "spi", "dfu", "user-flash", "mcufw",
+				"bridge", "skip-load-bridge", "skip-reset", "target-flash",
+				"flash-sector", "file-size", "offset"
+			};
+			std::string hit;
+			for (const char *o : flash_opts) {
+				if (result.count(o))
+					hit += (hit.empty() ? "--" : ", --") + std::string(o);
+			}
+			if (!hit.empty()) {
+				printError("Error: --partial cannot be combined with " + hit +
+					": each reaches a flash path, which either loads the "
+					"SPI-over-JTAG bridge (a full configuration that erases "
+					"the running static and partial) before writing flash or "
+					"its non-volatile status register, or writes the file to "
+					"flash directly");
+				return -1;
+			}
+			if (args->board[0] != '-') {
+				auto b = board_list.find(args->board);
+				if (b != board_list.end() && b->second.mode != COMM_JTAG) {
+					printError("Error: --partial cannot be used with board '" +
+						args->board + "': it is not a JTAG board, and its "
+						"SPI or DFU path writes the file to flash");
+					return -1;
+				}
+			}
 		}
 
 		if (args->passive_serial) {
