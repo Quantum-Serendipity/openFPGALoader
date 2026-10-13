@@ -1951,6 +1951,10 @@ bool Xilinx::dumpFlash(uint32_t base_addr, uint32_t len)
 
 bool Xilinx::detect_flash(bool full_info)
 {
+	if (full_info && !_skip_load_bridge)
+		printWarn(std::string("--flash-info: loading the flash bridge "
+			"replaces the design running in the FPGA") +
+			(_skip_reset ? "" : ", then the FPGA is reloaded from flash"));
 	if (_is_bpi_board) {
 		if (!_bpi_flash) {
 			if (!load_bpi_bridge())
