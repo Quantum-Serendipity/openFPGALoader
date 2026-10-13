@@ -1393,7 +1393,8 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 				"protect-flash", "unprotect-flash", "enable-quad",
 				"disable-quad", "spi", "dfu", "user-flash", "mcufw",
 				"bridge", "skip-load-bridge", "skip-reset", "target-flash",
-				"flash-sector", "file-size", "offset"
+				"flash-sector", "file-size", "offset", "flash-info",
+				"flash-info-json"
 			};
 			std::string hit;
 			for (const char *o : flash_opts) {
@@ -1502,6 +1503,28 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			printError("Error: --readback-out/--readback-far-list mean "
 				"nothing without --readback-frames");
 			return -1;
+		}
+
+		if (args->flash_info || !args->flash_info_json.empty()) {
+			static const char *const write_opts[] = {
+				"bitstream", "secondary-bitstream", "file-type", "mcufw",
+				"user-flash", "write-sram", "dump-flash", "bulk-erase",
+				"protect-flash", "unprotect-flash", "enable-quad",
+				"disable-quad", "partial", "readback-frames"
+			};
+			std::string hit;
+			for (const char *o : write_opts) {
+				if (result.count(o))
+					hit += (hit.empty() ? "--" : ", --") + std::string(o);
+			}
+			if (!hit.empty()) {
+				printError("Error: --flash-info/--flash-info-json cannot be "
+					"combined with " + hit + ": --flash-info selects the "
+					"write-flash mode, so a file would be erased and "
+					"programmed into flash, and any other action would run "
+					"in that mode");
+				return -1;
+			}
 		}
 
 		if (result.count("freq")) {
