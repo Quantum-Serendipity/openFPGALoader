@@ -101,7 +101,16 @@ Display detailed SPI flash information
 
 .. code-block:: bash
 
-    openFPGALoader -b arty --flash-info
+    openFPGALoader -b ulx3s --flash-info
+
+On Xilinx parts the flash is reached through the *spiOverJtag* bridge,
+and ``--flash-info`` is refused unless the bridge is already running and
+``--skip-load-bridge`` is given:
+
+.. code-block:: bash
+
+    openFPGALoader -b arty /usr/local/share/openFPGALoader/spiOverJtag_xc7a35tcsg324.bit.gz
+    openFPGALoader -b arty --flash-info --skip-load-bridge
 
 No command that writes the flash is sent: no write enable, no program, no
 erase and no status, configuration or security register write. The
@@ -201,11 +210,15 @@ Versions:
 
 .. NOTE::
   On FPGAs where the flash is only reachable through the FPGA (ie Xilinx,
-  through a *spiOverJtag* bridge), every ``--flash-info`` read, including the
-  JEDEC ID, replaces the running design with the bridge, then the FPGA is
-  reloaded from flash. A warning says so before the bridge is loaded;
-  ``--skip-load-bridge`` uses a bridge that is already loaded, and
-  ``--skip-reset`` leaves the bridge running afterwards.
+  through a *spiOverJtag* bridge), loading the bridge replaces the running
+  design, so ``--flash-info`` and ``--flash-info-json`` are refused on
+  Xilinx unless ``--skip-load-bridge`` is given. The refusal comes before
+  any cable is opened when ``-b`` or ``--fpga-part`` names a Xilinx part,
+  and otherwise after the JTAG chain scan identifies one, before anything
+  is loaded. After the reads the FPGA is reloaded from flash unless
+  ``--skip-reset`` is given. On BPI flash boards the bridge is always
+  loaded, ``--skip-load-bridge`` does not apply, and ``--flash-info`` is
+  refused.
 
   Through the Xilinx *spiOverJtag* bridge a transfer never reports a
   failure, so on these parts a "failed read" error cannot fire: an

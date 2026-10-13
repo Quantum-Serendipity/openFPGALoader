@@ -1524,6 +1524,37 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 					"would write, erase, reconfigure or read back instead");
 				return -1;
 			}
+			std::string part = args->fpga_part;
+			bool bpi = false;
+			if (args->board[0] != '-') {
+				auto b = board_list.find(args->board);
+				if (b != board_list.end()) {
+					if (part.empty())
+						part = b->second.fpga_part;
+					bpi = b->second.mode == COMM_JTAG &&
+						b->second.spi_bpi == BPI_FLASH;
+				}
+			}
+			std::string pfx = part.substr(0, 2);
+			for (auto &c : pfx)
+				c = tolower(c);
+			if (bpi) {
+				printError("Error: --flash-info/--flash-info-json cannot be "
+					"used with board '" + args->board + "': its BPI flash is "
+					"reached through a bridge that is always loaded, a full "
+					"configuration that replaces the design running in the "
+					"FPGA, and --skip-load-bridge does not apply to it");
+				return -1;
+			}
+			if ((pfx == "xc" || pfx == "xa" || pfx == "xq") &&
+					!args->skip_load_bridge) {
+				printError("Error: --flash-info/--flash-info-json on Xilinx "
+					"part '" + part + "' load the SPI-over-JTAG bridge, a "
+					"full configuration that replaces the design running in "
+					"the FPGA; load the bridge yourself and pass "
+					"--skip-load-bridge");
+				return -1;
+			}
 		}
 
 		if (result.count("freq")) {

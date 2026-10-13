@@ -1951,10 +1951,20 @@ bool Xilinx::dumpFlash(uint32_t base_addr, uint32_t len)
 
 bool Xilinx::detect_flash(bool full_info)
 {
-	if (full_info && !_skip_load_bridge)
-		printWarn(std::string("--flash-info: loading the flash bridge "
-			"replaces the design running in the FPGA") +
-			(_skip_reset ? "" : ", then the FPGA is reloaded from flash"));
+	if (full_info && _is_bpi_board) {
+		printError("Error: --flash-info/--flash-info-json cannot be used on "
+			"a BPI flash board: its bridge is always loaded, a full "
+			"configuration that replaces the design running in the FPGA, "
+			"and --skip-load-bridge does not apply to it");
+		return false;
+	}
+	if (full_info && !_skip_load_bridge) {
+		printError("Error: --flash-info/--flash-info-json on Xilinx load "
+			"the SPI-over-JTAG bridge, a full configuration that replaces "
+			"the design running in the FPGA; load the bridge yourself and "
+			"pass --skip-load-bridge");
+		return false;
+	}
 	if (_is_bpi_board) {
 		if (!_bpi_flash) {
 			if (!load_bpi_bridge())
