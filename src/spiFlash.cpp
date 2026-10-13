@@ -935,7 +935,8 @@ void SPIFlash::display_info()
 	}
 	/* a second read must give the same ID */
 	uint8_t rx[3];
-	_spi->spi_put(0x9F, NULL, rx, 3);
+	if (_spi->spi_put(0x9F, NULL, rx, 3) != 0)
+		throw std::runtime_error("JEDEC ID re-read failed");
 	const uint32_t id2 = (rx[0] << 16) | (rx[1] << 8) | rx[2];
 	if (id2 != (_jedec_id >> 8)) {
 		char msg[128];
