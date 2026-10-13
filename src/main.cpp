@@ -1518,11 +1518,10 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 					hit += (hit.empty() ? "--" : ", --") + std::string(o);
 			}
 			if (!hit.empty()) {
-				printError("Error: --flash-info/--flash-info-json cannot be "
-					"combined with " + hit + ": --flash-info selects the "
-					"write-flash mode, so a file would be erased and "
-					"programmed into flash, and any other action would run "
-					"in that mode");
+				printError("Error: --flash-info/--flash-info-json only read "
+					"the flash identification and cannot be combined with " +
+					hit + ": they run in the flash mode, where that option "
+					"would write, erase, reconfigure or read back instead");
 				return -1;
 			}
 		}

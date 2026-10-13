@@ -103,7 +103,22 @@ Display detailed SPI flash information
 
     openFPGALoader -b arty --flash-info
 
-Only read-only commands are sent to the flash.
+No command that writes the flash is sent: no write enable, no program, no
+erase and no status, configuration or security register write. The
+commands sent are identification reads (``0x9F``, ``0x5A`` and the
+manufacturer unique ID reads), status, configuration and security register
+reads, ``0xFF`` padding, the software reset ``0x66``/``0x99``, release
+from power-down ``0xAB``, and on Macronix, only when its security register
+says an ESN was programmed, ``0xB1`` (enter secured OTP), a ``0x03`` read
+and ``0xC1`` (exit secured OTP). The reset, release from power-down and
+secured OTP commands change the flash mode, not its content.
+
+``--flash-info`` and ``--flash-info-json`` are refused beside a bitstream
+(positional or ``--bitstream``) and beside ``--secondary-bitstream``,
+``--file-type``, ``--mcufw``, ``--user-flash``, ``--write-sram``,
+``--dump-flash``, ``--bulk-erase``, ``--protect-flash``,
+``--unprotect-flash``, ``--enable-quad``, ``--disable-quad``, ``--partial``
+and ``--readback-frames``.
 
 The report is not displayed, and openFPGALoader exits with an error, when
 the JEDEC ID is not a valid one (manufacturer code failing JEP106 odd
@@ -188,7 +203,13 @@ Versions:
   On FPGAs where the flash is only reachable through the FPGA (ie Xilinx,
   through a *spiOverJtag* bridge), every ``--flash-info`` read, including the
   JEDEC ID, replaces the running design with the bridge, then the FPGA is
-  reloaded from flash.
+  reloaded from flash. A warning says so before the bridge is loaded;
+  ``--skip-load-bridge`` uses a bridge that is already loaded, and
+  ``--skip-reset`` leaves the bridge running afterwards.
+
+  Through the Xilinx *spiOverJtag* bridge a transfer never reports a
+  failure, so on these parts a "failed read" error cannot fire: an
+  unreached flash is caught by the JEDEC ID parity and re-read checks only.
 
 Detect/read/write on primary/secondary flash memories
 =====================================================
