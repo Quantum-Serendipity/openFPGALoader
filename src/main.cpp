@@ -12,6 +12,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <vector>
 
@@ -199,6 +200,43 @@ static bool parse_readback_spec(const std::string &spec, uint32_t *far,
 	return true;
 }
 
+static std::string options_beside(const cxxopts::ParseResult &result,
+	const std::set<std::string> &own)
+{
+	static const std::set<std::string> link = {
+		"board", "cable", "freq", "vid", "pid", "cable-index", "busdev-num",
+		"usb-serial-num", "ftdi-serial", "ftdi-channel", "device", "ip",
+		"port", "pins", "invert-read-edge", "status-pin", "probe-firmware",
+		"index-chain", "misc-device", "verbose", "verbose-level", "quiet",
+		"force-terminal-mode"
+	};
+	std::set<std::string> seen;
+	std::string hit;
+	for (const auto &kv : result.arguments()) {
+		const std::string &k = kv.key();
+		if (link.count(k) || own.count(k) || !seen.insert(k).second)
+			continue;
+		if (!hit.empty())
+			hit += ", ";
+		hit += (k == "bitstream") ? "the file '" + kv.value() + "'" : "--" + k;
+	}
+	return hit;
+}
+
+static bool is_xilinx_7series_part(const std::string &part)
+{
+	std::string p = part.substr(0, 3);
+	for (auto &c : p)
+		c = tolower(c);
+	return p == "xc7" || p == "xa7" || p == "xq7";
+}
+
+static bool is_xilinx_7series_family(const std::string &family)
+{
+	return family.compare(0, 8, "artix a7") == 0 || family == "kintex7" ||
+		family == "spartan7" || family == "virtex7" || family == "zynq";
+}
+
 void displaySupported(const struct arguments &args);
 
 /* --flash-info-json: write every SPIFlash::display_info() record, only
@@ -264,19 +302,32 @@ int main(int argc, char **argv)
 	};
 	/* parse arguments */
 	int ret = parse_opt(argc, argv, &args, &pins_config);
+	if (!args.flash_info_json.empty())
+		remove(args.flash_info_json.c_str());
 	if (ret != 0)
 		return (ret == 1) ? EXIT_SUCCESS : EXIT_FAILURE;
 
 	if (args.force_terminal_mode)
 		ProgressBar::setForceTerminalMode();
 
-	/* a failed run must not leave a previous run's file behind */
-	if (!args.flash_info_json.empty())
-		remove(args.flash_info_json.c_str());
-
 	if (args.is_list_command) {
 		displaySupported(args);
 		return EXIT_SUCCESS;
+	}
+
+	if (args.partial) {
+#ifdef ENABLE_XILINX_SUPPORT
+		try {
+			Xilinx::checkPartialPayload(args.bit_file, args.file_type,
+				args.verbose);
+		} catch (std::exception &e) {
+			printError("Error: " + std::string(e.what()));
+			return EXIT_FAILURE;
+		}
+#else
+		printError("Support for Xilinx FPGAs was not enabled at compile time");
+		return EXIT_FAILURE;
+#endif
 	}
 
 	if (args.prg_type == Device::WR_SRAM)
@@ -628,6 +679,17 @@ int main(int argc, char **argv)
 	}
 
 	std::string fab = fpga_list[idcode].manufacturer;
+
+	if (args.partial && (fab != "xilinx" ||
+			!is_xilinx_7series_family(fpga_list[idcode].family))) {
+		char idc[16];
+		snprintf(idc, sizeof(idc), "0x%08x", idcode);
+		printError("Error: --partial: the device on the chain (" +
+			std::string(idc) + ", " + fab + " " + fpga_list[idcode].family +
+			") is not a Xilinx 7-series part");
+		delete(jtag);
+		return EXIT_FAILURE;
+	}
 
 
 	Device *fpga;
@@ -1329,53 +1391,20 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 		else if (result.count("external-flash"))
 			args->prg_type = Device::WR_FLASH;
 
-		/* --------------------------------------------------------------
-		 * --partial refusals.
-		 *
-		 * A partial bitstream is written into a device that is ALREADY
-		 * CONFIGURED AND RUNNING, alongside a static design that must
-		 * survive the load.  Every refusal below names a way to lose that
-		 * static, and each is a way the flag would otherwise appear to
-		 * work: nothing here fails loudly on hardware, it fails by
-		 * erasing something and returning success.
-		 * -------------------------------------------------------------- */
 		if (args->partial) {
-			/* 1. --partial with --write-flash.  A partial has no meaning
-			 * in a flash image: the device boots the whole flash contents
-			 * as a full configuration, so the "partial" would be written
-			 * as if it were a complete bitstream. */
-			if (result.count("write-flash") || result.count("external-flash")) {
-				printError("Error: --partial cannot be combined with "
-					"--write-flash: a partial bitstream is written into a "
-					"running device, not stored as a boot image");
+			std::string hit = options_beside(result,
+				{"partial", "write-sram", "bitstream", "file-type"});
+			if (!hit.empty()) {
+				printError("Error: --partial cannot be combined with " + hit +
+					": a partial load writes one file into a running device "
+					"and the same invocation must not write, erase, reset, "
+					"read back or reconfigure anything else");
 				return -1;
 			}
-			/* 2. --partial without --write-sram.  Deliberately requires the
-			 * flag EXPLICITLY rather than accepting the WR_SRAM default
-			 * applied later in main(): --partial is the one option in this
-			 * tool whose misuse destroys a working design, so the mode it
-			 * needs is stated, not inferred. */
-			if (args->prg_type != Device::WR_SRAM) {
+			if (!result.count("write-sram")) {
 				printError("Error: --partial requires -m/--write-sram");
 				return -1;
 			}
-			/* 3. --partial with -r/--reset.  Xilinx::reset() is JSHUTDOWN
-			 * followed by JPROGRAM (src/xilinx.cpp:545-546).  It runs after
-			 * a successful load, so the combination loads the partial
-			 * correctly and then clears the configuration memory it was
-			 * just written into -- the exact damage --partial exists to
-			 * prevent, arriving at exit code 0. */
-			if (args->reset) {
-				printError("Error: --partial cannot be combined with "
-					"-r/--reset: reset is JSHUTDOWN+JPROGRAM and would "
-					"clear the configuration the partial was loaded into");
-				return -1;
-			}
-			/* 4. --partial on a file that is not a .bit or .bin.  Any other
-			 * extension selects a different Device::mode in the Xilinx
-			 * constructor -- mcs and jed do not reach program_mem() at all,
-			 * pdi reaches it and then takes the PDI arm, which is neither
-			 * guarded block.  --partial would be silently inert. */
 			std::string t = args->file_type;
 			if (t.empty()) {
 				size_t dot = args->bit_file.rfind('.');
@@ -1388,34 +1417,19 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 					"'); use --file-type to override the extension");
 				return -1;
 			}
-			static const char *const flash_opts[] = {
-				"write-flash", "external-flash", "dump-flash", "bulk-erase",
-				"protect-flash", "unprotect-flash", "enable-quad",
-				"disable-quad", "spi", "dfu", "user-flash", "mcufw",
-				"bridge", "skip-load-bridge", "skip-reset", "target-flash",
-				"flash-sector", "file-size", "offset", "flash-info",
-				"flash-info-json"
-			};
-			std::string hit;
-			for (const char *o : flash_opts) {
-				if (result.count(o))
-					hit += (hit.empty() ? "--" : ", --") + std::string(o);
-			}
-			if (!hit.empty()) {
-				printError("Error: --partial cannot be combined with " + hit +
-					": each reaches a flash path, which either loads the "
-					"SPI-over-JTAG bridge (a full configuration that erases "
-					"the running static and partial) before writing flash or "
-					"its non-volatile status register, or writes the file to "
-					"flash directly");
-				return -1;
-			}
 			if (args->board[0] != '-') {
 				auto b = board_list.find(args->board);
 				if (b != board_list.end() && b->second.mode != COMM_JTAG) {
 					printError("Error: --partial cannot be used with board '" +
 						args->board + "': it is not a JTAG board, and its "
 						"SPI or DFU path writes the file to flash");
+					return -1;
+				}
+				if (b != board_list.end() && !b->second.fpga_part.empty() &&
+						!is_xilinx_7series_part(b->second.fpga_part)) {
+					printError("Error: --partial on board '" + args->board +
+						"': " + b->second.fpga_part + " is not a Xilinx "
+						"7-series part");
 					return -1;
 				}
 			}
@@ -1429,67 +1443,27 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			}
 		}
 
-		/* --------------------------------------------------------------
-		 * --readback-frames refusals.
-		 *
-		 * A readback is a READ of a device that is already configured and
-		 * running.  Nothing it does is destructive by itself, so every
-		 * refusal here is about the company it keeps: an argv that reads
-		 * frames AND writes configuration in one invocation is
-		 * indistinguishable, to every screen that inspects an argv, from a
-		 * load -- and the frames it then reports are the frames of whatever
-		 * it just wrote, not of the design somebody meant to measure.
-		 * -------------------------------------------------------------- */
 		if (!args->readback_frames.empty()) {
+			std::string hit = options_beside(result, {"readback-frames",
+				"readback-out", "readback-far-list", "read-register"});
+			if (!hit.empty()) {
+				printError("Error: --readback-frames cannot be combined with " +
+					hit + ": a readback reads a running device and the same "
+					"invocation must not write, erase, reset or reconfigure it");
+				return -1;
+			}
 			uint32_t rb_far = 0, rb_count = 0;
 			std::string why;
-			/* 1. a malformed spec, decided before a cable is opened. */
 			if (!parse_readback_spec(args->readback_frames, &rb_far,
 					&rb_count, &why)) {
 				printError("Error: --readback-frames " + why);
 				return -1;
 			}
-			/* 2. --readback-frames with a WRITE mode.  -m/--write-sram would
-			 * shift a bitstream in (and, without --partial, JPROGRAM first)
-			 * and the readback would then measure the loader's own work.
-			 * --write-flash and --dump-flash touch non-volatile memory, which
-			 * this feature has no business being in the same command as. */
-			if (args->prg_type == Device::WR_SRAM) {
-				printError("Error: --readback-frames cannot be combined with "
-					"-m/--write-sram: the readback would measure the frames "
-					"this same invocation just wrote, not the ones that were "
-					"there. Read first, then load, in two commands");
-				return -1;
-			}
-			if (args->prg_type == Device::WR_FLASH ||
-					args->prg_type == Device::RD_FLASH) {
-				printError("Error: --readback-frames cannot be combined with "
-					"--write-flash/--external-flash/--dump-flash: a frame "
-					"readback is an SRAM-side read and has nothing to do with "
-					"non-volatile memory");
-				return -1;
-			}
-			/* 3. --readback-frames with -r/--reset.  Xilinx::reset() is
-			 * JSHUTDOWN followed by JPROGRAM and runs at the end of main(), so
-			 * the combination reads the frames correctly and then clears the
-			 * configuration memory they came from, at exit code 0. */
-			if (args->reset) {
-				printError("Error: --readback-frames cannot be combined with "
-					"-r/--reset: reset is JSHUTDOWN+JPROGRAM and would clear "
-					"the configuration memory that was just read");
-				return -1;
-			}
-			/* 4. nowhere to put the answer.  Refused rather than defaulted:
-			 * a readback that writes to a guessed path is a readback whose
-			 * output somebody else's run will overwrite. */
 			if (args->readback_out.empty()) {
 				printError("Error: --readback-frames needs --readback-out "
 					"<file>");
 				return -1;
 			}
-			/* 5. more than one frame without the part's frame address order.
-			 * See Xilinx::readbackFrames(): consecutive frames do not carry
-			 * consecutive FARs. */
 			if (rb_count > 1 && args->readback_far_list.empty()) {
 				printError("Error: --readback-frames needs "
 					"--readback-far-list for more than one frame: consecutive "
@@ -1497,6 +1471,14 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 					"labelling frame i with FAR+i is wrong after the first "
 					"column boundary");
 				return -1;
+			}
+			if (args->board[0] != '-') {
+				auto b = board_list.find(args->board);
+				if (b != board_list.end() && b->second.mode != COMM_JTAG) {
+					printError("Error: --readback-frames cannot be used with "
+						"board '" + args->board + "': it is not a JTAG board");
+					return -1;
+				}
 			}
 		} else if (!args->readback_out.empty() ||
 				!args->readback_far_list.empty()) {
@@ -1506,22 +1488,15 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 		}
 
 		if (args->flash_info || !args->flash_info_json.empty()) {
-			static const char *const write_opts[] = {
-				"bitstream", "secondary-bitstream", "file-type", "mcufw",
-				"user-flash", "write-sram", "dump-flash", "bulk-erase",
-				"protect-flash", "unprotect-flash", "enable-quad",
-				"disable-quad", "partial", "readback-frames"
-			};
-			std::string hit;
-			for (const char *o : write_opts) {
-				if (result.count(o))
-					hit += (hit.empty() ? "--" : ", --") + std::string(o);
-			}
+			std::string hit = options_beside(result, {"flash-info",
+				"flash-info-json", "detect", "skip-load-bridge", "skip-reset",
+				"fpga-part", "bridge", "target-flash", "external-flash",
+				"spi"});
 			if (!hit.empty()) {
 				printError("Error: --flash-info/--flash-info-json only read "
 					"the flash identification and cannot be combined with " +
 					hit + ": they run in the flash mode, where that option "
-					"would write, erase, reconfigure or read back instead");
+					"would write, erase, reset, reconfigure or read back instead");
 				return -1;
 			}
 			std::string part = args->fpga_part;
@@ -1547,12 +1522,13 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 				return -1;
 			}
 			if ((pfx == "xc" || pfx == "xa" || pfx == "xq") &&
-					!args->skip_load_bridge) {
+					(!args->skip_load_bridge || !args->skip_reset)) {
 				printError("Error: --flash-info/--flash-info-json on Xilinx "
 					"part '" + part + "' load the SPI-over-JTAG bridge, a "
 					"full configuration that replaces the design running in "
-					"the FPGA; load the bridge yourself and pass "
-					"--skip-load-bridge");
+					"the FPGA, and reset the device (JSHUTDOWN+JPROGRAM) "
+					"after the read, including a failed one; load the bridge "
+					"yourself and pass --skip-load-bridge --skip-reset");
 				return -1;
 			}
 		}
