@@ -1131,16 +1131,6 @@ void Xilinx::program_mem(ConfigBitstreamParser *bitfile)
 		 * engine, so a register read re-syncs cleanly and needs no idle of our
 		 * own.
 		 *
-		 * read_register("STAT") is the verdict, and it costs no new code:
-		 * dumpRegister() drives CFG_IN/CFG_OUT on a configured device with no
-		 * JPROGRAM anywhere, which is the shipped existence proof that this
-		 * whole path works without clearing configuration memory.  It matters
-		 * for a partial specifically: the stream sets CTL0 bit 10
-		 * (ConfigFallback) and never clears it, so a bad CRC leaves the device
-		 * STOPPED with an error to read rather than silently falling back to a
-		 * boot from flash -- which would reload the whole device and destroy
-		 * the static.
-		 *
 		 * The RUN_TEST_IDLE below is a no-op after step 16 above and the
 		 * go_test_logic_reset is repeated by dumpRegister's own first line.
 		 * Both are written out anyway so that this arm reads as the complete
@@ -1149,7 +1139,23 @@ void Xilinx::program_mem(ConfigBitstreamParser *bitfile)
 		 */
 		_jtag->set_state(Jtag::RUN_TEST_IDLE);
 		_jtag->go_test_logic_reset();
-		read_register("STAT");
+		const uint32_t stat = dumpRegister("STAT");
+		displayRegister("STAT", stat);
+		std::string bad;
+		if (stat & (1u << 0))
+			bad += " CRC_ERROR";
+		if (stat & (1u << 15))
+			bad += " ID_ERROR";
+		if (stat & (1u << 16))
+			bad += " DEC_ERROR";
+		if (!(stat & (1u << 14)))
+			bad += " DONE=0";
+		if (!bad.empty()) {
+			char msg[128];
+			snprintf(msg, sizeof(msg), "--partial: STAT 0x%08x after the "
+				"load reports%s", stat, bad.c_str());
+			throw std::runtime_error(msg);
+		}
 	}
 	else {
 		/*
