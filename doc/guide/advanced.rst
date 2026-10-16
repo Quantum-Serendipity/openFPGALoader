@@ -105,12 +105,12 @@ Display detailed SPI flash information
 
 On Xilinx parts the flash is reached through the *spiOverJtag* bridge,
 and ``--flash-info`` is refused unless the bridge is already running and
-``--skip-load-bridge`` is given:
+both ``--skip-load-bridge`` and ``--skip-reset`` are given:
 
 .. code-block:: bash
 
     openFPGALoader -b arty /usr/local/share/openFPGALoader/spiOverJtag_xc7a35tcsg324.bit.gz
-    openFPGALoader -b arty --flash-info --skip-load-bridge
+    openFPGALoader -b arty --flash-info --skip-load-bridge --skip-reset
 
 No command that writes the flash is sent: no write enable, no program, no
 erase and no status, configuration or security register write. The
@@ -211,14 +211,14 @@ Versions:
 .. NOTE::
   On FPGAs where the flash is only reachable through the FPGA (ie Xilinx,
   through a *spiOverJtag* bridge), loading the bridge replaces the running
-  design, so ``--flash-info`` and ``--flash-info-json`` are refused on
-  Xilinx unless ``--skip-load-bridge`` is given. The refusal comes before
-  any cable is opened when ``-b`` or ``--fpga-part`` names a Xilinx part,
-  and otherwise after the JTAG chain scan identifies one, before anything
-  is loaded. After the reads the FPGA is reloaded from flash unless
-  ``--skip-reset`` is given. On BPI flash boards the bridge is always
-  loaded, ``--skip-load-bridge`` does not apply, and ``--flash-info`` is
-  refused.
+  design, and the reset after the reads (JSHUTDOWN then JPROGRAM) clears
+  it, also when a read failed. So ``--flash-info`` and ``--flash-info-json``
+  are refused on Xilinx unless ``--skip-load-bridge`` and ``--skip-reset``
+  are given. The refusal comes before any cable is opened when ``-b`` or
+  ``--fpga-part`` names a Xilinx part, and otherwise after the JTAG chain
+  scan identifies one, before anything is loaded. On BPI flash boards the
+  bridge is always loaded, ``--skip-load-bridge`` does not apply, and
+  ``--flash-info`` is refused.
 
   Through the Xilinx *spiOverJtag* bridge a transfer never reports a
   failure, so on these parts a "failed read" error cannot fire: an

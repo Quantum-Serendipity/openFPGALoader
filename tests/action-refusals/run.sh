@@ -178,6 +178,8 @@ model_rc partial_id_error_stat 1 'ID_ERROR' --stat 0x4010F9FC -- -m --partial "$
 model_rc partial_done_low_stat 1 'DONE' --stat 0x401039FC -- -m --partial "$T/good.bit"
 model_rc partial_spartan6_idcode 1 'not a Xilinx 7-series part' --idcode 0x04001093 -- \
 	-m --partial "$T/good.bit"
+model_rc flash_info_xilinx_found_on_chain 1 'pass --skip-load-bridge --skip-reset' -- \
+	--flash-info --skip-load-bridge
 model_rc readback_to_file 0 'written to' -- "${RB[@]}"
 if grep -q '^\.frame 0x00000000' "$T/d.txt" 2>/dev/null; then
 	ok readback_to_file_has_frame

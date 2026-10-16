@@ -1477,12 +1477,13 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 				return -1;
 			}
 			if ((pfx == "xc" || pfx == "xa" || pfx == "xq") &&
-					!args->skip_load_bridge) {
+					(!args->skip_load_bridge || !args->skip_reset)) {
 				printError("Error: --flash-info/--flash-info-json on Xilinx "
 					"part '" + part + "' load the SPI-over-JTAG bridge, a "
 					"full configuration that replaces the design running in "
-					"the FPGA; load the bridge yourself and pass "
-					"--skip-load-bridge");
+					"the FPGA, and reset the device (JSHUTDOWN+JPROGRAM) "
+					"after the read, including a failed one; load the bridge "
+					"yourself and pass --skip-load-bridge --skip-reset");
 				return -1;
 			}
 		}
