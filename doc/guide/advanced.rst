@@ -122,12 +122,12 @@ says an ESN was programmed, ``0xB1`` (enter secured OTP), a ``0x03`` read
 and ``0xC1`` (exit secured OTP). The reset, release from power-down and
 secured OTP commands change the flash mode, not its content.
 
-``--flash-info`` and ``--flash-info-json`` are refused beside a bitstream
-(positional or ``--bitstream``) and beside ``--secondary-bitstream``,
-``--file-type``, ``--mcufw``, ``--user-flash``, ``--write-sram``,
-``--dump-flash``, ``--bulk-erase``, ``--protect-flash``,
-``--unprotect-flash``, ``--enable-quad``, ``--disable-quad``, ``--partial``
-and ``--readback-frames``.
+Beside the cable and board selection options (``-b``, ``-c``, ``--freq``,
+``--busdev-num``, ``--index-chain`` and the like) and the verbosity options,
+``--flash-info`` and ``--flash-info-json`` accept only ``--detect``,
+``--skip-load-bridge``, ``--skip-reset``, ``--fpga-part``, ``--bridge``,
+``--target-flash``, ``--external-flash`` and ``--spi``. Any other option,
+and any bitstream, is refused.
 
 The report is not displayed, and openFPGALoader exits with an error, when
 the JEDEC ID is not a valid one (manufacturer code failing JEP106 odd
