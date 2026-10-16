@@ -315,6 +315,21 @@ int main(int argc, char **argv)
 		return EXIT_SUCCESS;
 	}
 
+	if (args.partial) {
+#ifdef ENABLE_XILINX_SUPPORT
+		try {
+			Xilinx::checkPartialPayload(args.bit_file, args.file_type,
+				args.verbose);
+		} catch (std::exception &e) {
+			printError("Error: " + std::string(e.what()));
+			return EXIT_FAILURE;
+		}
+#else
+		printError("Support for Xilinx FPGAs was not enabled at compile time");
+		return EXIT_FAILURE;
+#endif
+	}
+
 	if (args.prg_type == Device::WR_SRAM)
 		std::cout << "write to ram" << std::endl;
 	if (args.prg_type == Device::WR_FLASH)

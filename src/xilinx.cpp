@@ -18,6 +18,7 @@
 #include <iomanip>
 #include <iostream>
 #include <list>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -1877,6 +1878,131 @@ bool Xilinx::readbackFrames(uint32_t far, uint32_t count,
 		nonzero_words, nonzero_ecc);
 	printSuccess(msg);
 	return true;
+}
+
+void Xilinx::checkPartialPayload(const std::string &filename,
+	const std::string &file_type, int8_t verbose)
+{
+	static const std::map<uint32_t, std::string> reg_names = {
+		{0x00, "CRC"}, {0x01, "FAR"}, {0x02, "FDRI"}, {0x03, "FDRO"},
+		{0x04, "CMD"}, {0x05, "CTL0"}, {0x06, "MASK"}, {0x07, "STAT"},
+		{0x08, "LOUT"}, {0x09, "COR0"}, {0x0a, "MFWR"}, {0x0b, "CBC"},
+		{0x0c, "IDCODE"}, {0x0d, "AXSS"}, {0x0e, "COR1"}, {0x10, "WBSTAR"},
+		{0x11, "TIMER"}, {0x13, "RBCRC_SW"}, {0x16, "BOOTSTS"},
+		{0x18, "CTL1"}, {0x1f, "BSPI"}
+	};
+	static const std::map<uint32_t, std::string> cmd_names = {
+		{0x00, "NULL"}, {0x01, "WCFG"}, {0x02, "MFW"}, {0x03, "LFRM"},
+		{0x04, "RCFG"}, {0x05, "START"}, {0x06, "RCAP"}, {0x07, "RCRC"},
+		{0x08, "AGHIGH"}, {0x09, "SWITCH"}, {0x0a, "GRESTORE"},
+		{0x0b, "SHUTDOWN"}, {0x0c, "GCAPTURE"}, {0x0d, "DESYNC"},
+		{0x0f, "IPROG"}, {0x10, "CRCC"}, {0x11, "LTIMER"},
+		{0x12, "BSPI_READ"}, {0x13, "FALL_EDGE"}
+	};
+	const uint32_t ctl0_allowed = (1u << 8) | (1u << 10);
+	auto name_of = [](const std::map<uint32_t, std::string> &m, uint32_t v) {
+		auto it = m.find(v);
+		char hex[16];
+		snprintf(hex, sizeof(hex), "0x%02x", v);
+		return (it == m.end()) ? std::string(hex) : it->second;
+	};
+
+	std::string ext = file_type;
+	if (ext.empty())
+		ext = filename.substr(filename.find_last_of(".") + 1);
+	ConfigBitstreamParser *parser = nullptr;
+	open_bitfile(filename, ext, &parser, false, verbose > 0);
+	std::unique_ptr<ConfigBitstreamParser> bit(parser);
+	const uint8_t *data = bit->getData();
+	const size_t nwords = static_cast<size_t>(bit->getLength()) / 32;
+	auto word = [data](size_t i) {
+		return (static_cast<uint32_t>(data[4 * i]) << 24) |
+			(static_cast<uint32_t>(data[4 * i + 1]) << 16) |
+			(static_cast<uint32_t>(data[4 * i + 2]) << 8) |
+			static_cast<uint32_t>(data[4 * i + 3]);
+	};
+	auto refuse = [&filename](size_t at, const std::string &why) {
+		throw std::runtime_error("--partial refused: '" + filename +
+			"' " + why + " (word " + std::to_string(at) + " of the stream); "
+			"a partial bitstream carries only FAR, FDRI, MFWR, CRC, IDCODE, "
+			"MASK, CTL0 bits 8 and 10, and the commands NULL, WCFG, MFW, "
+			"RCRC and DESYNC");
+	};
+
+	size_t i = 0;
+	while (i < nwords && word(i) != 0xAA995566)
+		i++;
+	if (i == nwords)
+		refuse(i, "has no sync word, so it is not a configuration stream");
+
+	bool synced = true;
+	uint32_t reg = 0, mask = 0xffffffff;
+	bool have_reg = false;
+	for (i++; i < nwords;) {
+		const size_t at = i;
+		const uint32_t h = word(i++);
+		if (!synced) {
+			synced = (h == 0xAA995566);
+			continue;
+		}
+		if (h == 0xAA995566)
+			continue;
+		const uint32_t type = h >> 29, op = (h >> 27) & 0x3;
+		uint32_t n = 0;
+		if (type == 1) {
+			reg = (h >> 13) & 0x3fff;
+			n = h & 0x7ff;
+			have_reg = true;
+		} else if (type == 2 && have_reg) {
+			n = h & 0x7ffffff;
+		} else {
+			char hdr[64];
+			snprintf(hdr, sizeof(hdr), "has a malformed packet header "
+				"0x%08x", h);
+			refuse(at, hdr);
+		}
+		if (op == 0) {
+			if (n != 0)
+				refuse(at, "has a NOOP packet that carries data");
+			continue;
+		}
+		if (op != 2)
+			refuse(at, "reads register " + name_of(reg_names, reg) +
+				" instead of writing it");
+		if (n > nwords - i)
+			refuse(at, "ends inside a packet writing " +
+				name_of(reg_names, reg));
+		switch (reg) {
+		case 0x00: case 0x01: case 0x02: case 0x0a: case 0x0c:
+			break;
+		case 0x06:
+			if (n)
+				mask = word(i + n - 1);
+			break;
+		case 0x05:
+			if (mask & ~ctl0_allowed) {
+				char m[96];
+				snprintf(m, sizeof(m), "writes CTL0 under MASK 0x%08x%s",
+					mask, (mask & (1u << 12)) ? ", which covers bit 12" : "");
+				refuse(at, m);
+			}
+			break;
+		case 0x04:
+			for (uint32_t k = 0; k < n; k++) {
+				const uint32_t c = word(i + k);
+				if (c == 0x0d) {
+					synced = false;
+				} else if (c != 0x00 && c != 0x01 && c != 0x02 &&
+						c != 0x07) {
+					refuse(at, "issues CMD " + name_of(cmd_names, c));
+				}
+			}
+			break;
+		default:
+			refuse(at, "writes register " + name_of(reg_names, reg));
+		}
+		i += n;
+	}
 }
 
 void Xilinx::displayRegister(const std::string reg_name, const uint32_t reg_val) {
