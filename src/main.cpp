@@ -288,15 +288,13 @@ int main(int argc, char **argv)
 	};
 	/* parse arguments */
 	int ret = parse_opt(argc, argv, &args, &pins_config);
+	if (!args.flash_info_json.empty())
+		remove(args.flash_info_json.c_str());
 	if (ret != 0)
 		return (ret == 1) ? EXIT_SUCCESS : EXIT_FAILURE;
 
 	if (args.force_terminal_mode)
 		ProgressBar::setForceTerminalMode();
-
-	/* a failed run must not leave a previous run's file behind */
-	if (!args.flash_info_json.empty())
-		remove(args.flash_info_json.c_str());
 
 	if (args.is_list_command) {
 		displaySupported(args);
