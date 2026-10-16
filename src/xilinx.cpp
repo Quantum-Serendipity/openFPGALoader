@@ -6,8 +6,10 @@
 
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 
@@ -1826,7 +1828,7 @@ bool Xilinx::readbackFrames(uint32_t far, uint32_t count,
 	_jtag->flush();
 
 	/* ---- the dump --------------------------------------------------------
-	 * Byte-for-byte `bitread -o`'s writer (prjxray tools/bitread.cc:236-259):
+	 * Byte-for-byte `bitread -o`'s writer:
 	 * ".frame 0x%08x", then the words six to a line as %08x separated by a
 	 * space, then a blank line.  Written to match because the consumer is
 	 * scripts/bitread-to-frm.py, which was written against bitread's output
@@ -1856,7 +1858,16 @@ bool Xilinx::readbackFrames(uint32_t far, uint32_t count,
 		}
 		fprintf(f, "\n\n");
 	}
-	fclose(f);
+	int werr = ferror(f) ? EIO : 0;
+	if (fclose(f) != 0 && werr == 0)
+		werr = errno;
+	if (werr != 0) {
+		struct stat st;
+		if (stat(out_path.c_str(), &st) == 0 && S_ISREG(st.st_mode))
+			remove(out_path.c_str());
+		throw std::runtime_error("--readback-frames: writing '" + out_path +
+			"' failed: " + strerror(werr));
+	}
 
 	snprintf(msg, sizeof(msg),
 		"readback: %u frames from FAR 0x%08x written to %s "

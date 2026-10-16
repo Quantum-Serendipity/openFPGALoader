@@ -70,8 +70,14 @@ with_model() {
 		[[ -s $T/port ]] && break
 		sleep 0.1
 	done
-	timeout 60 "$OFL" --cable xvc-client --ip 127.0.0.1 \
-		--port "$(cat "$T/port")" "$@" >"$T/out" 2>&1
+	(
+		if [[ -n ${FSIZE_BLOCKS:-} ]]; then
+			trap '' XFSZ
+			ulimit -f "$FSIZE_BLOCKS"
+		fi
+		exec timeout 60 "$OFL" --cable xvc-client --ip 127.0.0.1 \
+			--port "$(cat "$T/port")" "$@"
+	) >"$T/out" 2>&1
 	echo $? >"$T/rc"
 	kill "$MODEL_PID" 2>/dev/null
 	wait "$MODEL_PID" 2>/dev/null
@@ -185,6 +191,13 @@ if grep -q '^\.frame 0x00000000' "$T/d.txt" 2>/dev/null; then
 	ok readback_to_file_has_frame
 else
 	ko readback_to_file_has_frame "no .frame line in the dump"
+fi
+FSIZE_BLOCKS=1 model_rc readback_over_file_size_limit 1 '' -- \
+	--readback-frames 0x0:2 --readback-out "$T/big.txt" --readback-far-list "$T/far.txt"
+if [[ -e $T/big.txt ]]; then
+	ko readback_over_file_size_limit_leaves_no_dump "a truncated dump was left at the path"
+else
+	ok readback_over_file_size_limit_leaves_no_dump
 fi
 if [[ -w /dev/full ]]; then
 	model_rc readback_to_full_device 1 '' -- --readback-frames 0x0:1 --readback-out /dev/full
