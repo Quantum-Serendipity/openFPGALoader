@@ -223,6 +223,20 @@ static std::string options_beside(const cxxopts::ParseResult &result,
 	return hit;
 }
 
+static bool is_xilinx_7series_part(const std::string &part)
+{
+	std::string p = part.substr(0, 3);
+	for (auto &c : p)
+		c = tolower(c);
+	return p == "xc7" || p == "xa7" || p == "xq7";
+}
+
+static bool is_xilinx_7series_family(const std::string &family)
+{
+	return family.compare(0, 8, "artix a7") == 0 || family == "kintex7" ||
+		family == "spartan7" || family == "virtex7" || family == "zynq";
+}
+
 void displaySupported(const struct arguments &args);
 
 /* --flash-info-json: write every SPIFlash::display_info() record, only
@@ -650,6 +664,17 @@ int main(int argc, char **argv)
 	}
 
 	std::string fab = fpga_list[idcode].manufacturer;
+
+	if (args.partial && (fab != "xilinx" ||
+			!is_xilinx_7series_family(fpga_list[idcode].family))) {
+		char idc[16];
+		snprintf(idc, sizeof(idc), "0x%08x", idcode);
+		printError("Error: --partial: the device on the chain (" +
+			std::string(idc) + ", " + fab + " " + fpga_list[idcode].family +
+			") is not a Xilinx 7-series part");
+		delete(jtag);
+		return EXIT_FAILURE;
+	}
 
 
 	Device *fpga;
@@ -1383,6 +1408,13 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 					printError("Error: --partial cannot be used with board '" +
 						args->board + "': it is not a JTAG board, and its "
 						"SPI or DFU path writes the file to flash");
+					return -1;
+				}
+				if (b != board_list.end() && !b->second.fpga_part.empty() &&
+						!is_xilinx_7series_part(b->second.fpga_part)) {
+					printError("Error: --partial on board '" + args->board +
+						"': " + b->second.fpga_part + " is not a Xilinx "
+						"7-series part");
 					return -1;
 				}
 			}
