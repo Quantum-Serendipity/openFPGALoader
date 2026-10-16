@@ -101,7 +101,8 @@ model_rc() {
 	fi
 }
 
-for v in good start grestore shutdown iprog cor0 wbstar ctl0-bit12 nosync truncated; do
+for v in good start grestore shutdown iprog cor0 wbstar ctl0-bit12 nosync truncated \
+		unaligned-sync unaligned-resync two-syncs; do
 	python3 "$HERE/make_stream.py" "$v" "$T/$v.bin"
 done
 python3 "$HERE/make_stream.py" good "$T/good.bit"
@@ -169,6 +170,10 @@ for v in start grestore shutdown iprog cor0 wbstar ctl0-bit12 nosync truncated; 
 	refused "partial_payload_$v" '--partial refused' -m --partial "$T/$v.bin"
 done
 refused partial_payload_start_in_bit '--partial refused' -m --partial "$T/start.bit"
+for v in unaligned-sync unaligned-resync; do
+	refused "partial_payload_$v" 'not on a 32-bit word boundary' -m --partial "$T/$v.bin"
+done
+accepted partial_payload_two_syncs -m --partial "$T/two-syncs.bin"
 
 echo '{"stale": true}' >"$T/info.json"
 offline --flash-info-json "$T/info.json" --fpga-part xc7a100tfgg484

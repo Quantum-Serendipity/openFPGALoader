@@ -115,6 +115,8 @@ class Xilinx: public Device, FlashInterface {
 
 		static void checkPartialPayload(const std::string &filename,
 				const std::string &file_type, int8_t verbose);
+		static void checkPayloadStream(const uint8_t *data, size_t nbytes,
+				bool reversed, const std::string &filename);
 
 		/*!
 		 * \brief display SPI flash ID and status register

@@ -706,6 +706,21 @@ void Xilinx::program(unsigned int offset, bool unprotect_flash)
 		throw std::runtime_error(e.what());
 	}
 
+	if (_partial) {
+		try {
+			if (!bit)
+				throw std::runtime_error("--partial refused: no "
+					"bitstream was opened for the load");
+			checkPayloadStream(bit->getData(),
+				static_cast<size_t>(bit->getLength()) / 8, reverse,
+				_filename);
+		} catch (std::exception &e) {
+			delete bit;
+			delete secondary_bit;
+			throw std::runtime_error(e.what());
+		}
+	}
+
 	if (_verbose) {
 		if (bit)
 			bit->displayHeader();
@@ -1883,6 +1898,19 @@ bool Xilinx::readbackFrames(uint32_t far, uint32_t count,
 void Xilinx::checkPartialPayload(const std::string &filename,
 	const std::string &file_type, int8_t verbose)
 {
+	std::string ext = file_type;
+	if (ext.empty())
+		ext = filename.substr(filename.find_last_of(".") + 1);
+	ConfigBitstreamParser *parser = nullptr;
+	open_bitfile(filename, ext, &parser, false, verbose > 0);
+	std::unique_ptr<ConfigBitstreamParser> bit(parser);
+	checkPayloadStream(bit->getData(),
+		static_cast<size_t>(bit->getLength()) / 8, false, filename);
+}
+
+void Xilinx::checkPayloadStream(const uint8_t *data, size_t nbytes,
+	bool reversed, const std::string &filename)
+{
 	static const std::map<uint32_t, std::string> reg_names = {
 		{0x00, "CRC"}, {0x01, "FAR"}, {0x02, "FDRI"}, {0x03, "FDRO"},
 		{0x04, "CMD"}, {0x05, "CTL0"}, {0x06, "MASK"}, {0x07, "STAT"},
@@ -1907,19 +1935,16 @@ void Xilinx::checkPartialPayload(const std::string &filename,
 		return (it == m.end()) ? std::string(hex) : it->second;
 	};
 
-	std::string ext = file_type;
-	if (ext.empty())
-		ext = filename.substr(filename.find_last_of(".") + 1);
-	ConfigBitstreamParser *parser = nullptr;
-	open_bitfile(filename, ext, &parser, false, verbose > 0);
-	std::unique_ptr<ConfigBitstreamParser> bit(parser);
-	const uint8_t *data = bit->getData();
-	const size_t nwords = static_cast<size_t>(bit->getLength()) / 32;
-	auto word = [data](size_t i) {
-		return (static_cast<uint32_t>(data[4 * i]) << 24) |
-			(static_cast<uint32_t>(data[4 * i + 1]) << 16) |
-			(static_cast<uint32_t>(data[4 * i + 2]) << 8) |
-			static_cast<uint32_t>(data[4 * i + 3]);
+	auto byte_at = [data, reversed](size_t k) {
+		const uint8_t b = data[k];
+		return reversed ? ConfigBitstreamParser::reverseByte(b) : b;
+	};
+	const size_t nwords = nbytes / 4;
+	auto word = [&byte_at](size_t i) {
+		return (static_cast<uint32_t>(byte_at(4 * i)) << 24) |
+			(static_cast<uint32_t>(byte_at(4 * i + 1)) << 16) |
+			(static_cast<uint32_t>(byte_at(4 * i + 2)) << 8) |
+			static_cast<uint32_t>(byte_at(4 * i + 3));
 	};
 	auto refuse = [&filename](size_t at, const std::string &why) {
 		throw std::runtime_error("--partial refused: '" + filename +
@@ -1928,23 +1953,39 @@ void Xilinx::checkPartialPayload(const std::string &filename,
 			"MASK, CTL0 bits 8 and 10, and the commands NULL, WCFG, MFW, "
 			"RCRC and DESYNC");
 	};
+	const size_t npos = static_cast<size_t>(-1);
+	auto find_sync = [&byte_at, nbytes, npos](size_t from_bit) {
+		uint32_t sr = 0;
+		size_t seen = 0;
+		for (size_t b = from_bit; b < nbytes * 8; b++) {
+			sr = (sr << 1) | ((byte_at(b >> 3) >> (7 - (b & 7))) & 1u);
+			if (++seen >= 32 && sr == 0xAA995566)
+				return b - 31;
+		}
+		return npos;
+	};
+	auto resync = [&](size_t from_word) {
+		const size_t at = find_sync(from_word * 32);
+		if (at == npos)
+			return npos;
+		if (at % 32) {
+			char m[96];
+			snprintf(m, sizeof(m), "has a sync word at bit %zu, which is "
+				"not on a 32-bit word boundary", at);
+			refuse(at / 32, m);
+		}
+		return at / 32 + 1;
+	};
 
-	size_t i = 0;
-	while (i < nwords && word(i) != 0xAA995566)
-		i++;
-	if (i == nwords)
-		refuse(i, "has no sync word, so it is not a configuration stream");
+	size_t i = resync(0);
+	if (i == npos)
+		refuse(nwords, "has no sync word, so it is not a configuration stream");
 
-	bool synced = true;
 	uint32_t reg = 0, mask = 0xffffffff;
 	bool have_reg = false;
-	for (i++; i < nwords;) {
+	while (i < nwords) {
 		const size_t at = i;
 		const uint32_t h = word(i++);
-		if (!synced) {
-			synced = (h == 0xAA995566);
-			continue;
-		}
 		if (h == 0xAA995566)
 			continue;
 		const uint32_t type = h >> 29, op = (h >> 27) & 0x3;
@@ -1972,6 +2013,7 @@ void Xilinx::checkPartialPayload(const std::string &filename,
 		if (n > nwords - i)
 			refuse(at, "ends inside a packet writing " +
 				name_of(reg_names, reg));
+		bool desync = false;
 		switch (reg) {
 		case 0x00: case 0x01: case 0x02: case 0x0a: case 0x0c:
 			break;
@@ -1991,7 +2033,7 @@ void Xilinx::checkPartialPayload(const std::string &filename,
 			for (uint32_t k = 0; k < n; k++) {
 				const uint32_t c = word(i + k);
 				if (c == 0x0d) {
-					synced = false;
+					desync = true;
 				} else if (c != 0x00 && c != 0x01 && c != 0x02 &&
 						c != 0x07) {
 					refuse(at, "issues CMD " + name_of(cmd_names, c));
@@ -2002,6 +2044,11 @@ void Xilinx::checkPartialPayload(const std::string &filename,
 			refuse(at, "writes register " + name_of(reg_names, reg));
 		}
 		i += n;
+		if (desync) {
+			i = resync(i);
+			if (i == npos)
+				return;
+		}
 	}
 }
 

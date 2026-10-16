@@ -50,10 +50,32 @@ def bit_header(nbytes):
             + field(b'd', b'00:00:00') + b'e' + struct.pack('>I', nbytes))
 
 
+def pack(words):
+    return struct.pack('>%dI' % len(words), *words)
+
+
+def shifted(words, nbits):
+    v = int.from_bytes(pack(words), 'big')
+    total = 32 * len(words) + nbits
+    total += -total % 32
+    return (v << (total - 32 * len(words) - nbits)).to_bytes(total // 8, 'big')
+
+
+def payload(variant):
+    good = pack(stream('good'))
+    decoy = [SYNC] + w1('CMD', CMD['IPROG']) + [NOOP] + w1('CMD', CMD['DESYNC'])
+    if variant == 'unaligned-sync':
+        return b'\xff' + pack(decoy) + b'\xff' * 3 + good
+    if variant == 'unaligned-resync':
+        return good + shifted(decoy, 3)
+    if variant == 'two-syncs':
+        return good + good
+    return pack(stream(variant))
+
+
 def main():
     variant, out = sys.argv[1], sys.argv[2]
-    words = stream(variant)
-    data = struct.pack('>%dI' % len(words), *words)
+    data = payload(variant)
     with open(out, 'wb') as f:
         if out.endswith('.bit'):
             f.write(bit_header(len(data)))
