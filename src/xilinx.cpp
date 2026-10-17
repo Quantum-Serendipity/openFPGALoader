@@ -40,6 +40,7 @@
 #include "spiFlash.hpp"
 #include "flashInterface.hpp"
 #include "xilinx.hpp"
+#include "xilinxFrameSpace.hpp"
 #include "xilinxMapParser.hpp"
 
 /* Used for xc3s */
@@ -1413,341 +1414,43 @@ uint32_t Xilinx::dumpRegister(std::string reg_name)
 	return reg_word;
 }
 
-/* ===========================================================================
- * H14: CONFIGURATION FRAME READBACK THROUGH FDRO.
- *
- * WHY THIS IS HERE AT ALL.  openFPGALoader 1.1.1 can read the seven
- * configuration REGISTERS it has codes for (reg_code above) and nothing else.
- * It carries no FDRO code and no readback command, so there is no way to get a
- * configuration FRAME out of a running device with this tool -- and a frame is
- * the only thing that says whether a partial bitstream landed where it was
- * meant to and left the static alone.  `bitread` reads frames out of a .bit
- * FILE; nothing in the FOSS chain reads them out of SILICON.
- *
- * WHAT IT REUSES.  dumpRegister()'s primitive, unchanged in shape: a packet
- * stream shifted through CFG_IN, then CFG_OUT selected and the answer shifted
- * out of the DR.  Only the packets and the length of the answer differ.
- *
- * THE SEQUENCE, and where each word comes from.  UG470 v1.13.1 p.134-136,
- * "Configuration Memory Read Procedure (1149.1 JTAG)" step 7 and Table 6-5:
- *
- *     FFFFFFFF   dummy word
- *     AA995566   sync word
- *     20000000   Type 1 NOOP
- *     30008001   Type 1 write 1 word to CMD
- *     00000004   RCFG
- *     30002001   Type 1 write 1 word to FAR
- *     <far>      starting frame address
- *     28006000   Type 1 read 0 words from FDRO
- *     48......   Type 2 read N words from FDRO
- *     20000000   Type 1 NOOP
- *     20000000   Type 1 NOOP
- *
- * then CFG_OUT, then N words shifted out.  N = words_per_frame * (count + 1):
- * UG470 p.130 step 8, "One extra frame is read to account for the frame
- * buffer.  The frame buffer produces one dummy frame at the beginning of the
- * read."  That extra frame is DISCARDED below; keeping it labels every frame
- * in the dump with its predecessor's address.
- *
- * WHAT IS DELIBERATELY NOT DONE, AND IT IS NOT AN OVERSIGHT.
- *
- *  - NO JSHUTDOWN.  UG470's Table 6-5 is the *Shutdown* Readback sequence and
- *    its steps 4-5 shift JSHUTDOWN and wait 12 TCK, which pulls DONE low and
- *    3-states the user I/O.  The whole point of this function is to read a
- *    RUNNING design without disturbing it; on the bench this tool serves,
- *    3-stating the I/O also stops a blower fan driven from a device pin.  The
- *    price is that readback is not atomic with respect to LUT RAM / SRL /
- *    block RAM contents, which change under a running design.  That is a
- *    property of the DESIGN and is constrained where the design is built, not
- *    here.
- *  - NO START, NO GRESTORE, NO GCAPTURE.  START and GRESTORE re-run startup on
- *    a device that never shut down.  GCAPTURE writes every CLB and IOB
- *    register's live value INTO the configuration cell that holds its INIT --
- *    it does not merely sample, it overwrites configuration memory, including
- *    the static's.  None of the three appears in the words above.
- *  - The epilogue is CMD:DESYNC and nothing else.  It returns the packet
- *    processor to the unsynchronised state, which is exactly the state the
- *    next partial load's own sync word expects.  Leaving the engine synced and
- *    still in RCFG would make the next stream's sync word arrive as a packet
- *    header of type 0b101, which is not a defined type.
- *
- * WHY THE CALLER HAS TO SUPPLY THE FRAME ADDRESS ORDER.
- *
- * The device answers with FRAMES, in FAR order, and says nothing about which
- * address each one carries.  Consecutive frames are NOT consecutive FARs: the
- * minor address is the low 7 bits, a column holds between 28 and 128 frames
- * depending on its type, and at a column boundary the FAR jumps by
- * 1 + (128 - frames_in_that_column).  A readback that labelled frame i with
- * far + i would therefore be correct inside the first column and wrong for
- * every frame after it -- silently, because the words would still be right.
- *
- * The sweep order is a property of the PART DATABASE, not of the device's
- * answer.  This tool does not invent it: --readback-far-list takes the ordered
- * list (prjxray's part.yaml is where it comes from) and the dump is labelled
- * from that.  A single-frame read needs no list, because its one address is
- * the FAR that was asked for.
- * ===========================================================================
- */
-
-/* FAR fields, UG470 v1.13.1 Table 5-24 (7 series):
- *   [31:26] reserved, zero   [25:23] block type   [22] top/bottom
- *   [21:17] row address      [16:7]  column       [6:0] minor
- */
-#define XIL_FAR_RSVD(f)   (((f) >> 26) & 0x3Fu)
-#define XIL_FAR_BLOCK(f)  (((f) >> 23) & 0x07u)
-#define XIL_FAR_HALF(f)   (((f) >> 22) & 0x01u)
-#define XIL_FAR_ROW(f)    (((f) >> 17) & 0x1Fu)
-#define XIL_FAR_COL(f)    (((f) >>  7) & 0x3FFu)
-#define XIL_FAR_MINOR(f)  ( (f)        & 0x7Fu)
-
-#define XIL_FS_BLOCKS 2
-#define XIL_FS_ROWS   2
-
-/* The frame space of one part, at ROW granularity.  Everything here was
- * measured out of prjxray-db's own part.yaml rather than transcribed from a
- * datasheet -- see the citation on the table below. */
-typedef struct {
-	const char *name;
-	uint16_t words_per_frame;
-	uint8_t  blocks;                              /* frame-carrying block types */
-	uint8_t  rows;                                /* row addresses per half */
-	uint16_t cols[XIL_FS_BLOCKS][XIL_FS_ROWS];    /* columns in that row */
-	uint16_t frames[XIL_FS_BLOCKS][XIL_FS_ROWS];  /* real frames in that row */
-	uint16_t max_minor[XIL_FS_BLOCKS];            /* largest column of that type */
-	uint16_t pads_per_row;                        /* pad frames per (block,half,row) */
-	uint32_t total_frames;                        /* real + pads */
-} xil_frame_space_t;
-
-/* MEASURED, not transcribed.  Produced by
- *   scripts/part-yaml-frame-count.py --per-group \
- *       <prjxray-db>/artix7/xc7a100tfgg484-2/part.yaml
- * in the xilinx7-dpr-foss-toolchain tree, 2026-08-15:
- *
- *   bottom row 0  CLB_IO_CLK  58 cols  2020 frames   (28..42 per column)
- *   bottom row 1  CLB_IO_CLK  52 cols  1808 frames
- *   bottom row 0  BLOCK_RAM    4 cols   512 frames   (128 per column)
- *   bottom row 1  BLOCK_RAM    3 cols   384 frames
- *   ... and the top half is identical row for row.
- *   REAL 9448, + 2 pads per (block, half, row) = 9464.
- *
- * 2 * ((2020+2) + (1808+2) + (512+2) + (384+2)) = 9464, which is the frame
- * count a full XC7A100T bitstream carries.  The arithmetic is asserted at the
- * head of readbackFrames() so a mistyped row here cannot pass silently.
- *
- * The FAR block-type encoding is prjxray's and UG470's: 0 = CLB/IO/CLK,
- * 1 = block RAM content.  This part has exactly those two.
- */
-static const struct {
-	uint32_t idcode;
-	xil_frame_space_t fs;
-} frame_space_table[] = {
-	{0x03631093, {"xc7a100t", 101, 2, 2,
-		/* cols      */ {{58, 52}, {4, 3}},
-		/* frames    */ {{2020, 1808}, {512, 384}},
-		/* max_minor */ {42, 128},
-		/* pads      */ 2,
-		/* total     */ 9464}},
-};
-
-static const xil_frame_space_t *xil_find_frame_space(uint32_t idcode)
-{
-	const size_t n = sizeof(frame_space_table) / sizeof(frame_space_table[0]);
-	for (size_t i = 0; i < n; i++)
-		if (frame_space_table[i].idcode == idcode)
-			return &frame_space_table[i].fs;
-	return NULL;
-}
-
-/* Frames the device holds at addresses AT OR AFTER (block, half, row).
- *
- * Exact at row granularity and an OVER-estimate inside the starting row: the
- * frames of that row that sit BEFORE the given column and minor are counted.
- * Stated rather than hidden, because it decides the polarity of the refusal it
- * feeds -- this bound never refuses a legal read, and it does refuse any read
- * that provably walks past the last frame of the device. */
-static uint32_t xil_frames_at_or_after(const xil_frame_space_t &fs,
-		uint32_t block, uint32_t half, uint32_t row)
-{
-	uint32_t n = 0;
-	for (uint32_t b = 0; b < fs.blocks; b++) {
-		for (uint32_t h = 0; h < 2; h++) {
-			for (uint32_t r = 0; r < fs.rows; r++) {
-				if (b < block)
-					continue;
-				if (b == block && h < half)
-					continue;
-				if (b == block && h == half && r < row)
-					continue;
-				n += fs.frames[b][r] + fs.pads_per_row;
-			}
-		}
-	}
-	return n;
-}
-
-/* The ordered frame-address list, read from a plain text file: one address per
- * line, `0x` hex or decimal, blank lines and `#` comments skipped.  A line
- * that is not entirely a number is a HARD ERROR rather than a skipped line: a
- * frame list nobody can parse is an address nobody supplied. */
-static std::vector<uint32_t> xil_read_far_list(const std::string &path)
-{
-	std::vector<uint32_t> out;
-	std::ifstream in(path);
-	if (!in.is_open())
-		throw std::runtime_error("--readback-far-list: cannot open '" +
-			path + "'");
-	std::string line;
-	unsigned lineno = 0;
-	while (std::getline(in, line)) {
-		lineno++;
-		size_t a = line.find_first_not_of(" \t\r\n");
-		if (a == std::string::npos || line[a] == '#')
-			continue;
-		size_t b = line.find_last_not_of(" \t\r\n");
-		const std::string tok = line.substr(a, b - a + 1);
-		char *end = NULL;
-		const unsigned long v = strtoul(tok.c_str(), &end, 0);
-		if (end == tok.c_str() || *end != '\0')
-			throw std::runtime_error("--readback-far-list: " + path + ":" +
-				std::to_string(lineno) + ": '" + tok +
-				"' is not a frame address");
-		out.push_back(static_cast<uint32_t>(v));
-	}
-	if (out.empty())
-		throw std::runtime_error("--readback-far-list: " + path +
-			" carries no frame addresses");
-	return out;
-}
-
+/* Safety invariant: the readback sequence below must never carry JSHUTDOWN,
+ * START, GRESTORE or GCAPTURE.  JSHUTDOWN 3-states the user I/O of the running
+ * design, START and GRESTORE re-run startup, and GCAPTURE overwrites
+ * configuration memory with live register values. */
 bool Xilinx::readbackFrames(uint32_t far, uint32_t count,
-		const std::string &out_path, const std::string &far_list_path)
+		const std::string &out_path, const std::vector<uint32_t> &far_list)
 {
 	char msg[512];
+	std::string why;
 
-	/* ---- the part, and its frame space ---------------------------------- */
 	const uint32_t idcode = _jtag->get_target_device_id();
-	const xil_frame_space_t *fsp = xil_find_frame_space(idcode);
+	const xil7::FrameSpace *fsp = xil7::find_frame_space(idcode);
 	if (fsp == NULL) {
 		snprintf(msg, sizeof(msg),
 			"--readback-frames refused: no frame-space descriptor for idcode "
 			"0x%08x. A readback needs the part's frame geometry to bound the "
-			"request, and this tool refuses to guess it.", idcode);
+			"request and label the frames, and this tool refuses to guess it.",
+			idcode);
 		throw std::runtime_error(msg);
 	}
-	const xil_frame_space_t &fs = *fsp;
+	const xil7::FrameSpace &fs = *fsp;
+	if (!xil7::check_frame_space(fs, &why))
+		throw std::runtime_error("--readback-frames refused: the built-in "
+			"frame space is inconsistent: " + why);
 
-	/* The table's own arithmetic, checked before it is used.  A mistyped row
-	 * count would otherwise silently loosen every bound below. */
-	const uint32_t table_total = xil_frames_at_or_after(fs, 0, 0, 0);
-	if (table_total != fs.total_frames) {
-		snprintf(msg, sizeof(msg),
-			"--readback-frames refused: the built-in frame space for %s sums "
-			"to %u frames but declares %u. The table is wrong; fix it rather "
-			"than the assertion.", fs.name, table_total, fs.total_frames);
-		throw std::runtime_error(msg);
-	}
+	xil7::ReadbackPlan plan;
+	if (!xil7::plan_readback(fs, far, count, &plan, &why))
+		throw std::runtime_error("--readback-frames refused: " + why);
 
-	/* ---- refusal: a FAR outside the device's frame space ----------------- */
-	const uint32_t blk = XIL_FAR_BLOCK(far), half = XIL_FAR_HALF(far);
-	const uint32_t row = XIL_FAR_ROW(far), minor = XIL_FAR_MINOR(far);
-	const uint32_t col = XIL_FAR_COL(far);
-	const char *why = NULL;
-	if (XIL_FAR_RSVD(far))
-		why = "bits [31:26] are reserved and must be zero";
-	else if (blk >= fs.blocks)
-		why = "block type is not a frame-carrying block type on this part";
-	else if (row >= fs.rows)
-		why = "row address is past the last row of a half on this part";
-	else if (col >= fs.cols[blk][row])
-		why = "column address is past the last column of that block type in "
-		      "that row";
-	else if (minor >= fs.max_minor[blk])
-		why = "minor address is past the largest column of that block type on "
-		      "this part";
-	if (why) {
-		snprintf(msg, sizeof(msg),
-			"--readback-frames refused: FAR 0x%08x is outside %s's frame "
-			"space -- %s. Decoded: block %u, %s half, row %u, column %u, "
-			"minor %u.", far, fs.name, why, blk, half ? "bottom" : "top",
-			row, col, minor);
-		throw std::runtime_error(msg);
-	}
-
-	if (count == 0)
-		throw std::runtime_error("--readback-frames refused: a count of zero "
-			"frames reads nothing and would produce an empty dump that "
-			"compares equal to any other empty dump");
-
-	/* ---- refusal: a count that runs past the end of the frame space ------
-	 * TWO INDEPENDENT BOUNDS, deliberately, and neither is derived from the
-	 * other.  The first is the built-in geometry, which needs no file and
-	 * cannot be talked out of by a caller.  The second is the caller's own
-	 * ordered address list, which is exact where the geometry is only exact to
-	 * a row.  A request has to satisfy both. */
-	const uint32_t remaining = xil_frames_at_or_after(fs, blk, half, row);
-	if (count > remaining) {
-		snprintf(msg, sizeof(msg),
-			"--readback-frames refused: %u frames from FAR 0x%08x runs past "
-			"the end of %s's frame space -- at most %u frames lie at or after "
-			"block %u, %s half, row %u, of %u on the part.",
-			count, far, fs.name, remaining, blk, half ? "bottom" : "top",
-			row, fs.total_frames);
-		throw std::runtime_error(msg);
-	}
-
-	/* ---- the caller's frame address order -------------------------------- */
-	std::vector<uint32_t> far_list;
-	size_t far_index = 0;
-	if (!far_list_path.empty()) {
-		far_list = xil_read_far_list(far_list_path);
-		if (far_list.size() > fs.total_frames) {
-			snprintf(msg, sizeof(msg),
-				"--readback-frames refused: the frame list carries %zu "
-				"addresses but %s has only %u frames. Two independent "
-				"definitions of this part's frame space disagree, so neither "
-				"can be used to bound a read.",
-				far_list.size(), fs.name, fs.total_frames);
-			throw std::runtime_error(msg);
-		}
-		bool found = false;
-		for (size_t i = 0; i < far_list.size(); i++) {
-			if (far_list[i] == far) {
-				far_index = i;
-				found = true;
-				break;
-			}
-		}
-		if (!found) {
-			snprintf(msg, sizeof(msg),
-				"--readback-frames refused: FAR 0x%08x is outside the device's "
-				"frame space -- it does not appear in the %zu addresses of the "
-				"supplied frame list.", far, far_list.size());
-			throw std::runtime_error(msg);
-		}
-		if (far_index + count > far_list.size()) {
-			snprintf(msg, sizeof(msg),
-				"--readback-frames refused: %u frames from FAR 0x%08x runs "
-				"past the end of the frame space -- that address is number "
-				"%zu of %zu in the supplied frame list, leaving %zu.",
-				count, far, far_index + 1, far_list.size(),
-				far_list.size() - far_index);
-			throw std::runtime_error(msg);
-		}
+	if (!far_list.empty()) {
+		if (!xil7::check_far_list(fs, far_list, plan, &why))
+			throw std::runtime_error("--readback-frames refused: " + why);
 	} else if (count > 1) {
 		throw std::runtime_error("--readback-frames refused: reading more than "
-			"one frame needs --readback-far-list. Consecutive frames do not "
-			"carry consecutive frame addresses -- at a column boundary the FAR "
-			"jumps by 1 + (128 - frames in that column) -- so labelling frame "
-			"i with FAR+i is wrong for every frame after the first column, and "
-			"this tool will not invent the part's sweep order");
+			"one frame needs --readback-far-list");
 	}
 
-	/* ---- refusal: DONE low ----------------------------------------------
-	 * The IR capture carries DONE at bit 5; program_mem() decodes it the same
-	 * way.  Reading frames out of a device that never finished configuring
-	 * returns whatever the configuration memory happens to hold, and it
-	 * returns it SUCCESSFULLY -- which is the shape of every bad null this
-	 * programme has found: an answer that agrees with anything. */
 	unsigned char rx_ir[(_irlen >> 3) + 1];
 	_jtag->go_test_logic_reset();
 	_jtag->shiftIR(get_ircode(_ircode_map, "BYPASS"), rx_ir, _irlen);
@@ -1759,12 +1462,12 @@ bool Xilinx::readbackFrames(uint32_t far, uint32_t count,
 			"device are not a measurement of anything and would still compare "
 			"equal to another such read.");
 
-	/* ---- the CFG_IN command stream --------------------------------------- */
-	const uint32_t nwords = static_cast<uint32_t>(fs.words_per_frame) *
-		(count + 1);                              /* +1: the dummy frame */
-	if (nwords > 0x07FFFFFFu)                     /* Type 2 count is 27 bits */
+	const uint64_t nwords64 = static_cast<uint64_t>(fs.words_per_frame) *
+		(static_cast<uint64_t>(plan.stream_frames) + 1);
+	if (nwords64 > 0x07FFFFFFu)
 		throw std::runtime_error("--readback-frames refused: the request does "
 			"not fit in a Type 2 packet word count");
+	const uint32_t nwords = static_cast<uint32_t>(nwords64);
 
 	const uint32_t cfg_in[] = {
 		0xFFFFFFFF,                               /* dummy word */
@@ -1843,29 +1546,42 @@ bool Xilinx::readbackFrames(uint32_t far, uint32_t count,
 	_jtag->go_test_logic_reset();
 	_jtag->flush();
 
-	/* ---- the dump --------------------------------------------------------
-	 * Byte-for-byte `bitread -o`'s writer:
-	 * ".frame 0x%08x", then the words six to a line as %08x separated by a
-	 * space, then a blank line.  Written to match because the consumer is
-	 * scripts/bitread-to-frm.py, which was written against bitread's output
-	 * and not against this one. */
+	const uint32_t wpf = fs.words_per_frame;
+	auto stream_word = [&](uint32_t slot, uint32_t w) {
+		const size_t idx = (static_cast<size_t>(slot + 1) * wpf + w) * 4;
+		return BitParser::reverse_32(char_array_to_word(&rx[idx]));
+	};
+	for (uint32_t k = 0; k + 1 < count; k++) {
+		for (uint32_t slot = plan.slots[k] + 1; slot < plan.slots[k + 1];
+				slot++) {
+			for (uint32_t w = 0; w < wpf; w++) {
+				const uint32_t word = stream_word(slot, w);
+				if (word == 0)
+					continue;
+				snprintf(msg, sizeof(msg),
+					"--readback-frames: the pad frame at stream position %u, "
+					"between FAR 0x%08x and FAR 0x%08x, carries 0x%08x at word "
+					"%u. The device emits %u all-zero pad frames where a read "
+					"crosses a block, half or row boundary; a non-zero pad "
+					"means the frames are not where %s's geometry puts them, "
+					"so no label after it can be trusted. Nothing was "
+					"written.", slot, plan.labels[k], plan.labels[k + 1],
+					word, w, fs.pads_per_group, fs.name);
+				throw std::runtime_error(msg);
+			}
+		}
+	}
+
 	FILE *f = fopen(out_path.c_str(), "w");
 	if (!f)
 		throw std::runtime_error("--readback-frames: cannot open '" +
 			out_path + "' for writing");
 
-	/* THE DUMMY FRAME.  Skipped here, and this is the whole reason the device
-	 * was asked for count+1 frames. */
-	const uint32_t skip = fs.words_per_frame;
 	uint32_t nonzero_ecc = 0, nonzero_words = 0;
-	for (uint32_t fr = 0; fr < count; fr++) {
-		const uint32_t addr = far_list.empty() ? far : far_list[far_index + fr];
-		fprintf(f, ".frame 0x%08x\n", addr);
-		for (uint32_t w = 0; w < fs.words_per_frame; w++) {
-			const size_t idx =
-				(static_cast<size_t>(skip) + fr * fs.words_per_frame + w) * 4;
-			const uint32_t word =
-				BitParser::reverse_32(char_array_to_word(&rx[idx]));
+	for (uint32_t k = 0; k < count; k++) {
+		fprintf(f, ".frame 0x%08x\n", plan.labels[k]);
+		for (uint32_t w = 0; w < wpf; w++) {
+			const uint32_t word = stream_word(plan.slots[k], w);
 			if (word)
 				nonzero_words++;
 			if (w == 50 && (word & 0x1FFF))
@@ -1887,9 +1603,10 @@ bool Xilinx::readbackFrames(uint32_t far, uint32_t count,
 
 	snprintf(msg, sizeof(msg),
 		"readback: %u frames from FAR 0x%08x written to %s "
-		"(%u words read including 1 dummy frame of %u discarded, "
-		"%u non-zero words, %u frames with a non-zero ECC field)",
-		count, far, out_path.c_str(), nwords, fs.words_per_frame,
+		"(%u words read including 1 dummy frame of %u discarded and %u "
+		"all-zero pad frames, %u non-zero words, %u frames with a non-zero "
+		"ECC field)",
+		count, far, out_path.c_str(), nwords, wpf, plan.pad_frames,
 		nonzero_words, nonzero_ecc);
 	printSuccess(msg);
 	return true;

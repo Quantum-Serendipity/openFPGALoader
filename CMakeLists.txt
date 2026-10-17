@@ -295,6 +295,7 @@ endif()
 # ===========================
 set(OPENFPGALOADER_SOURCE
 	src/common.cpp
+	src/xilinxFrameSpace.cpp
 	src/configBitstreamParser.cpp
 	src/device.cpp
 	src/display.cpp
@@ -303,6 +304,7 @@ set(OPENFPGALOADER_SOURCE
 )
 
 set(OPENFPGALOADER_HEADERS
+	src/xilinxFrameSpace.hpp
 	src/board.hpp
 	src/cable.hpp
 	src/common.hpp
@@ -653,6 +655,17 @@ add_executable(openFPGALoader
 	${OPENFPGALOADER_SOURCE}
 	${OPENFPGALOADER_HEADERS}
 )
+
+option(ENABLE_UNIT_TESTS "Build the pure-function unit tests" OFF)
+if (ENABLE_UNIT_TESTS)
+	enable_testing()
+	add_executable(xilinxFrameSpaceTest
+		tests/frame-space/xilinxFrameSpaceTest.cpp
+		src/xilinxFrameSpace.cpp
+	)
+	target_include_directories(xilinxFrameSpaceTest PRIVATE src)
+	add_test(NAME xilinxFrameSpace COMMAND xilinxFrameSpaceTest)
+endif()
 
 include_directories(
 	${LIBUSB_INCLUDE_DIRS}

@@ -1,7 +1,7 @@
 # action-refusals
 
 Regression arms for the refusals around `--partial`, `--readback-frames` and
-`--flash-info`.
+`--flash-info`, and for the labelling of a `--readback-frames` dump.
 
     tests/action-refusals/run.sh <path to openFPGALoader>
 
@@ -14,8 +14,22 @@ No arm can reach a cable:
   (`error : no_such_cable not found`), which returns before any probe is opened.
 - Model arms use `--cable xvc-client` against `xvc_tap_model.py`, a TAP model
   served on a loopback TCP port. It answers IDCODE, the IR capture (DONE, INIT)
-  and a fixed STAT word on CFG_OUT, and accepts any CFG_IN data.
+  and a fixed STAT word on CFG_OUT. It also parses the CFG_IN packet stream,
+  and after RCFG, a FAR write and an FDRO read it streams a dummy frame and then
+  the XC7A100T's frames in sweep order, with all-zero pad frames between
+  `(block, half, row)` groups. Each frame carries its own address, so a dump
+  label can be checked against its content. `--pads` and `--pad-word` model a
+  device whose pads differ; `--replay` serves recorded dumps instead.
+
+`OFL_RECORDED_CROSSING_DIR=<dir>` adds two arms that replay a silicon
+readback across a half and a row boundary. The directory must hold
+`b0-{left,right,cross}.{dump,far}` and `b1-...` as written by the
+xilinx7-dpr-foss-toolchain U31 crossing procedure; the arm passes when the
+crossing read, relabelled, equals the two non-crossing reads joined.
 
 `make_stream.py <variant> <out.bin|out.bit>` writes the synthetic configuration
 streams the payload arms load: `good` is a one-frame partial, and every other
 variant adds one thing a partial must not carry.
+
+The frame-space functions have a unit test, built with
+`-DENABLE_UNIT_TESTS=ON` and run by `ctest`.

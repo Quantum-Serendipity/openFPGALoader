@@ -59,59 +59,9 @@ class Xilinx: public Device, FlashInterface {
 		 */
 		uint32_t dumpRegister(const std::string reg_name);
 
-		/*!
-		 * \brief read configuration frames out of a RUNNING device through the
-		 *        FDRO register and write them as a `bitread -o` dump.
-		 *
-		 * Same JTAG primitive as dumpRegister(): a packet stream shifted
-		 * through CFG_IN, then CFG_OUT selected and the answer shifted out.
-		 * The difference is what is asked for -- CMD:RCFG, a FAR write and a
-		 * Type 1 read of FDRO carrying a Type 2 word count -- and that the
-		 * answer is frames rather than one register word.
-		 *
-		 * THE LEADING FRAME IS DUMMY AND IS DISCARDED HERE.  UG470 v1.13.1
-		 * p.134, "Configuration Memory Read Procedure (1149.1 JTAG)":
-		 * "Configuration data coming from the FDRO register pass through the
-		 * frame buffer, therefore the first frame of readback data is dummy
-		 * data and should be discarded".  So the device is asked for
-		 * (count + 1) frames and the first words_per_frame words are dropped;
-		 * `count` is the number of REAL frames written out.  Keep that frame
-		 * and every frame in the dump carries the address of its predecessor.
-		 *
-		 * NO JSHUTDOWN, DELIBERATELY.  UG470's Table 6-5 is the *Shutdown*
-		 * Readback sequence and its step 4 shifts JSHUTDOWN, which pulls DONE
-		 * low and 3-states the user I/O for the duration of the read.  On the
-		 * bench this tool is written for that would stop a blower fan driven
-		 * from a device pin, and it would stop the static design whose frames
-		 * are being measured.  Readback Verify does not require it; the
-		 * consequence is that any LUT RAM / SRL / block RAM in the design
-		 * whose contents change during the read is read non-atomically, which
-		 * is a property of the design and is asserted elsewhere, not here.
-		 *
-		 * THE CALLER SUPPLIES THE FRAME ADDRESS ORDER.  The device answers with
-		 * frames and says nothing about which address each one carries, and
-		 * consecutive frames do NOT carry consecutive FARs: the minor address
-		 * is the low 7 bits, a column holds 28 to 128 frames depending on its
-		 * type, and at a column boundary the FAR jumps by
-		 * 1 + (128 - frames in that column).  Labelling frame i with FAR+i is
-		 * therefore right inside the first column and wrong for every frame
-		 * after it -- silently, because the words are still correct.  The
-		 * sweep order is a property of the part database (prjxray's
-		 * part.yaml), so it is passed in rather than invented here.  A
-		 * single-frame read needs no list: its one address is the FAR asked
-		 * for.
-		 *
-		 * \param far           starting frame address (FAR)
-		 * \param count         number of real frames wanted
-		 * \param out_path      file to write the `bitread -o` dump to
-		 * \param far_list_path ordered frame addresses, one per line; may be
-		 *                      empty only when count == 1
-		 * \return true on success
-		 * \throw std::runtime_error on any refusal
-		 */
 		bool readbackFrames(uint32_t far, uint32_t count,
 				const std::string &out_path,
-				const std::string &far_list_path);
+				const std::vector<uint32_t> &far_list);
 
 		static void checkPartialPayload(const std::string &filename,
 				const std::string &file_type, int8_t verbose);

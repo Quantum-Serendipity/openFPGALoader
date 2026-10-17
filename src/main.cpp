@@ -60,6 +60,7 @@
 #include "progressBar.hpp"
 #include "spiFlash.hpp"
 #include "rawParser.hpp"
+#include "xilinxFrameSpace.hpp"
 #ifdef ENABLE_USBBLASTER
 #include "usbBlaster.hpp"
 #endif
@@ -147,6 +148,7 @@ struct arguments {
 	std::string readback_far_list;
 	bool flash_info;
 	std::string flash_info_json;
+	std::vector<uint32_t> readback_far_addrs;
 };
 
 int run_xvc_server(const struct arguments &args, const cable_t &cable,
@@ -174,15 +176,12 @@ static bool parse_readback_spec(const std::string &spec, uint32_t *far,
 		return false;
 	}
 	const std::string a = spec.substr(0, colon), b = spec.substr(colon + 1);
-	char *end = NULL;
-	const unsigned long fa = strtoul(a.c_str(), &end, 0);
-	if (end == a.c_str() || *end != '\0') {
+	uint32_t fa = 0, ct = 0;
+	if (!xil7::parse_u32(a, &fa)) {
 		*err = "'" + a + "' is not a frame address";
 		return false;
 	}
-	end = NULL;
-	const unsigned long ct = strtoul(b.c_str(), &end, 0);
-	if (end == b.c_str() || *end != '\0') {
+	if (!xil7::parse_u32(b, &ct)) {
 		*err = "'" + b + "' is not a frame count";
 		return false;
 	}
@@ -191,12 +190,8 @@ static bool parse_readback_spec(const std::string &spec, uint32_t *far,
 			"compares equal to any other empty dump";
 		return false;
 	}
-	if (fa > 0xFFFFFFFFul || ct > 0xFFFFFFFFul) {
-		*err = "frame address or count does not fit in 32 bits";
-		return false;
-	}
-	*far = static_cast<uint32_t>(fa);
-	*count = static_cast<uint32_t>(ct);
+	*far = fa;
+	*count = ct;
 	return true;
 }
 
@@ -298,7 +293,8 @@ int main(int argc, char **argv)
 			false, // partial
 			"", "", "",  // readback_frames, readback_out, readback_far_list
 			false, // flash_info
-			"" // flash_info_json
+			"", // flash_info_json
+			{}
 	};
 	/* parse arguments */
 	int ret = parse_opt(argc, argv, &args, &pins_config);
@@ -826,7 +822,7 @@ int main(int argc, char **argv)
 		}
 		try {
 			xilinx_fpga->readbackFrames(rb_far, rb_count, args.readback_out,
-				args.readback_far_list);
+				args.readback_far_addrs);
 		} catch (std::exception &e) {
 			printError("Error: " + std::string(e.what()));
 			delete(fpga);
@@ -1463,6 +1459,20 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 				printError("Error: --readback-frames needs --readback-out "
 					"<file>");
 				return -1;
+			}
+			if (!args->readback_far_list.empty()) {
+				std::ifstream fl(args->readback_far_list);
+				if (!fl.is_open()) {
+					printError("Error: --readback-far-list: cannot open '" +
+						args->readback_far_list + "'");
+					return -1;
+				}
+				std::string ferr;
+				if (!xil7::read_far_list(fl, args->readback_far_list,
+						&args->readback_far_addrs, &ferr)) {
+					printError("Error: --readback-far-list " + ferr);
+					return -1;
+				}
 			}
 			if (rb_count > 1 && args->readback_far_list.empty()) {
 				printError("Error: --readback-frames needs "
