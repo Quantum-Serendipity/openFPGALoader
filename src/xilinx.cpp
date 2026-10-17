@@ -1470,35 +1470,30 @@ bool Xilinx::readbackFrames(uint32_t far, uint32_t count,
 	const uint32_t nwords = static_cast<uint32_t>(nwords64);
 
 	const uint32_t cfg_in[] = {
-		0xFFFFFFFF,                               /* dummy word */
-		0xAA995566,                               /* sync word */
-		0x20000000,                               /* Type 1 NOOP */
-		0x30008001,                               /* Type 1 write 1 word: CMD */
-		0x00000004,                               /* RCFG */
-		0x30002001,                               /* Type 1 write 1 word: FAR */
+		0xFFFFFFFF,
+		0xAA995566,
+		0x20000000,
+		0x30008001,
+		0x00000004,
+		0x30002001,
 		far,
-		0x28006000,                               /* Type 1 read 0 words: FDRO */
-		0x48000000 | nwords,                      /* Type 2 read nwords: FDRO */
-		0x20000000,                               /* Type 1 NOOP */
-		0x20000000,                               /* Type 1 NOOP */
+		0x28006000,
+		0x48000000 | nwords,
+		0x20000000,
+		0x20000000,
 	};
 	const size_t cfg_in_n = sizeof(cfg_in) / sizeof(cfg_in[0]);
 
-	/* The DESYNC epilogue, shifted through CFG_IN after the frames are out. */
 	const uint32_t cfg_out_tail[] = {
-		0x20000000,                               /* Type 1 NOOP */
-		0x30008001,                               /* Type 1 write 1 word: CMD */
-		0x0000000D,                               /* DESYNC */
-		0x20000000,                               /* Type 1 NOOP */
-		0x20000000,                               /* Type 1 NOOP */
+		0x20000000,
+		0x30008001,
+		0x0000000D,
+		0x20000000,
+		0x20000000,
 	};
 	const size_t cfg_out_tail_n =
 		sizeof(cfg_out_tail) / sizeof(cfg_out_tail[0]);
 
-	/* Word order on the wire is dumpRegister()'s, unchanged: BitParser's
-	 * reverse_32 then four little-endian bytes, which is MSB-of-the-word
-	 * first -- UG470 p.134, "The MSB of all configuration packets sent through
-	 * the CFG_IN register must be sent first". */
 	_jtag->set_state(Jtag::RUN_TEST_IDLE);
 	_jtag->shiftIR(get_ircode(_ircode_map, "CFG_IN"), NULL, _irlen,
 		Jtag::SELECT_DR_SCAN);
@@ -1515,11 +1510,6 @@ bool Xilinx::readbackFrames(uint32_t far, uint32_t count,
 		_jtag->shiftDR(w, NULL, 32, next);
 	}
 
-	/* ---- CFG_OUT: the frames ---------------------------------------------
-	 * One shiftDR call.  XVC_client::writeTDI and the FTDI backends both split
-	 * it into transport-sized bursts on their own, so the TAP stays in
-	 * Shift-DR throughout and the device's frame buffer streams without a
-	 * re-capture in the middle. */
 	std::vector<uint8_t> tx(static_cast<size_t>(nwords) * 4, 0);
 	std::vector<uint8_t> rx(static_cast<size_t>(nwords) * 4, 0);
 	_jtag->shiftIR(get_ircode(_ircode_map, "CFG_OUT"), NULL, _irlen,
@@ -1528,7 +1518,6 @@ bool Xilinx::readbackFrames(uint32_t far, uint32_t count,
 		Jtag::RUN_TEST_IDLE);
 	_jtag->flush();
 
-	/* ---- CFG_IN again: DESYNC -------------------------------------------- */
 	_jtag->shiftIR(get_ircode(_ircode_map, "CFG_IN"), NULL, _irlen,
 		Jtag::SELECT_DR_SCAN);
 	for (size_t i = 0; i < cfg_out_tail_n; i++) {
