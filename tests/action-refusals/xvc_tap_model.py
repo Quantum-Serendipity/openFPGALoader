@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import signal
 import socket
 import sys
 
@@ -25,6 +26,7 @@ NEXT = {
 IR_LEN = 6
 IR_CFG_OUT = 0x04
 IR_CFG_IN = 0x05
+IR_USER1 = 0x02
 IR_IDCODE = 0x09
 
 WORDS_PER_FRAME = 101
@@ -89,8 +91,13 @@ def window(idcode, far, count):
 
 
 class Tap:
-    def __init__(self, idcode, stat, done, pads=2, pad_word=0, replay=None):
+    def __init__(self, idcode, stat, done, pads=2, pad_word=0, replay=None,
+                 user1_byte=None):
         self.idcode = idcode
+        self.user1_byte = user1_byte
+        self.user1_bit = 0
+        self.irs = []
+        self.cfg_out_bits = 0
         self.stat = stat
         self.ir_capture = 0x01 | 0x10 | (0x20 if done else 0)
         self.state = 'TLR'
@@ -176,6 +183,10 @@ class Tap:
         elif st == 'SHDR':
             if self.ir == IR_CFG_OUT:
                 tdo = self.dr.pop() if self.dr else 0
+                self.cfg_out_bits += 1
+            elif self.ir == IR_USER1 and self.user1_byte is not None:
+                tdo = (self.user1_byte >> (self.user1_bit & 7)) & 1
+                self.user1_bit += 1
             elif self.ir == IR_CFG_IN:
                 self.in_bits = ((self.in_bits << 1) | tdi) & 0xFFFFFFFF
                 self.in_n += 1
@@ -189,9 +200,11 @@ class Tap:
             self.ir_sr = self.ir_capture
         elif st == 'CAPDR':
             self.in_n = 0
+            self.user1_bit = 0
             self.capture_dr()
         elif st == 'UPIR':
             self.ir = self.ir_sr & ((1 << IR_LEN) - 1)
+            self.irs.append(self.ir)
         nxt = NEXT[st][tms]
         if nxt == 'TLR':
             self.ir = IR_IDCODE
@@ -221,27 +234,44 @@ def recv_command(conn):
     return cmd
 
 
-def serve(conn, tap):
+def serve(conn, tap, short_shift=None, shifts=None, tlr_shifts=None):
+    n_shift = 0
+    muted = False
+
+    def send(data):
+        if not muted:
+            conn.sendall(data)
+
     while True:
         try:
             cmd = recv_command(conn)
         except EOFError:
             return
         if cmd == b'getinfo:':
-            conn.sendall(b'xvcServer_v1.0:2048\n')
+            send(b'xvcServer_v1.0:2048\n')
         elif cmd == b'settck:':
-            conn.sendall(recv_exact(conn, 4))
+            send(recv_exact(conn, 4))
         elif cmd == b'shift:':
             nbits = int.from_bytes(recv_exact(conn, 4), 'little')
             nbytes = (nbits + 7) // 8
             tms = recv_exact(conn, nbytes)
             tdi = recv_exact(conn, nbytes)
             out = bytearray(nbytes)
+            before = tap.cfg_out_bits
             for i in range(nbits):
                 b = tap.clock((tms[i >> 3] >> (i & 7)) & 1,
                               (tdi[i >> 3] >> (i & 7)) & 1)
                 out[i >> 3] |= b << (i & 7)
-            conn.sendall(bytes(out))
+            n_shift += 1
+            if shifts is not None and tap.cfg_out_bits != before:
+                shifts.append(n_shift)
+            if tlr_shifts is not None and tap.state == 'TLR':
+                tlr_shifts.append(n_shift)
+            if n_shift == short_shift:
+                send(bytes(out[:nbytes // 2]))
+                conn.shutdown(socket.SHUT_WR)
+                muted = True
+            send(bytes(out))
         else:
             raise ValueError('unknown command %r' % cmd)
 
@@ -295,6 +325,11 @@ def main():
     p.add_argument('--replay', nargs='+')
     p.add_argument('--compare-dump')
     p.add_argument('--expect', nargs='+')
+    p.add_argument('--ir-log')
+    p.add_argument('--user1-byte', type=lambda s: int(s, 0))
+    p.add_argument('--short-shift', type=int)
+    p.add_argument('--cfg-out-shift-log')
+    p.add_argument('--tlr-shift-log')
     a = p.parse_args()
     if a.compare_dump:
         want = [f for x in a.expect for f in read_dump(x)]
@@ -326,8 +361,23 @@ def main():
     except socket.timeout:
         sys.exit('xvc_tap_model: no connection')
     conn.settimeout(a.accept_timeout)
-    serve(conn, Tap(a.idcode, a.stat, not a.done_low, a.pads, a.pad_word,
-                     replay))
+    tap = Tap(a.idcode, a.stat, not a.done_low, a.pads, a.pad_word, replay,
+              a.user1_byte)
+    shifts = []
+    tlr_shifts = []
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    try:
+        serve(conn, tap, a.short_shift, shifts, tlr_shifts)
+    finally:
+        if a.ir_log:
+            with open(a.ir_log, 'w') as f:
+                f.write(''.join('0x%02x\n' % x for x in tap.irs))
+        if a.cfg_out_shift_log:
+            with open(a.cfg_out_shift_log, 'w') as f:
+                f.write(''.join('%d\n' % x for x in shifts))
+        if a.tlr_shift_log:
+            with open(a.tlr_shift_log, 'w') as f:
+                f.write(''.join('%d\n' % x for x in tlr_shifts))
     conn.close()
     srv.close()
 

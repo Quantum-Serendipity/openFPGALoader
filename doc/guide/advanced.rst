@@ -131,8 +131,10 @@ and any bitstream, is refused.
 
 The report is not displayed, and openFPGALoader exits with an error, when
 the JEDEC ID is not a valid one (manufacturer code failing JEP106 odd
-parity) or is not the same when read twice: this happens when the flash
-is not really reached (ie SPI bridge not loaded).
+parity), is not the same when read twice, or is neither in the
+openFPGALoader flash database nor confirmed by an SFDP parameter table:
+this happens when the flash is not really reached (ie SPI bridge not
+loaded).
 
 For scripts, ``--flash-info-json FILE`` does the same and also writes the
 information to ``FILE`` as JSON. The file is only written when every flash
@@ -222,7 +224,9 @@ Versions:
 
   Through the Xilinx *spiOverJtag* bridge a transfer never reports a
   failure, so on these parts a "failed read" error cannot fire: an
-  unreached flash is caught by the JEDEC ID parity and re-read checks only.
+  unreached flash is caught by the JEDEC ID parity and re-read checks and
+  by the database-or-SFDP identity check, and ``sfdp: null`` does not by
+  itself establish that the part has no SFDP.
 
 Detect/read/write on primary/secondary flash memories
 =====================================================

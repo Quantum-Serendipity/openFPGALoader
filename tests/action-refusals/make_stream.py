@@ -5,8 +5,8 @@ import sys
 SYNC = 0xAA995566
 NOOP = 0x20000000
 REG = {'CRC': 0, 'FAR': 1, 'FDRI': 2, 'CMD': 4, 'CTL0': 5, 'MASK': 6,
-       'COR0': 9, 'IDCODE': 12, 'COR1': 14, 'WBSTAR': 16, 'TIMER': 17,
-       'CTL1': 24}
+       'COR0': 9, 'IDCODE': 12, 'AXSS': 13, 'COR1': 14, 'WBSTAR': 16,
+       'TIMER': 17, 'CTL1': 24}
 CMD = {'NULL': 0, 'WCFG': 1, 'RCRC': 7, 'START': 5, 'GRESTORE': 10,
        'SHUTDOWN': 11, 'IPROG': 15, 'DESYNC': 13}
 
@@ -30,13 +30,41 @@ def stream(variant):
         words += w1('WBSTAR', 0x00000000)
     words += w1('FAR', 0x00000000)
     words += w1('CMD', CMD['WCFG']) + [NOOP]
+    if variant == 'crc-before-fdri':
+        words += w1('CRC', 0x00000000)
     words += [0x30004000, 0x50000000 | 101] + [0] * 101
+    if variant == 'stop-after-fdri':
+        return words
     for c in ('START', 'GRESTORE', 'SHUTDOWN', 'IPROG'):
         if variant == c.lower():
             words += w1('CMD', CMD[c]) + [NOOP]
+    if variant == 'axss':
+        words += w1('AXSS', 0x5A5A0001)
+    if variant == 'axss-two':
+        words += w1('AXSS', 0x5A5A0001, 0x5A5A0002)
+    if variant == 'axss-type2':
+        words += [0x3001A000, 0x50000001, 0x5A5A0001]
+    if variant == 't2-after-noop':
+        words += [0x30008000, NOOP, 0x50000001, CMD['START']]
+    if variant == 'crc-empty':
+        words += [0x30000000]
+    elif variant == 'crc-two':
+        words += w1('CRC', 0x00000000, 0x00000000)
+    elif variant == 'crc-type2':
+        words += [0x30000000, 0x50000001, 0x00000000]
+    elif variant not in ('nocrc', 'crc-before-fdri'):
+        words += w1('CRC', 0x00000000)
     if variant == 'truncated':
         words += [0x30008002, CMD['DESYNC']]
         return words
+    if variant == 'no-desync':
+        return words + [NOOP] * 16
+    if variant == 'desync-wcfg':
+        return words + w1('CMD', CMD['DESYNC'], CMD['WCFG']) + [NOOP] * 16
+    if variant == 'desync-15-noops':
+        return words + w1('CMD', CMD['DESYNC']) + [NOOP] * 15
+    if variant == 'desync-no-noops':
+        return words + w1('CMD', CMD['DESYNC'])
     words += w1('CMD', CMD['DESYNC']) + [NOOP] * 16
     return words
 
@@ -70,6 +98,8 @@ def payload(variant):
         return good + shifted(decoy, 3)
     if variant == 'two-syncs':
         return good + good
+    if variant == 'odd-length':
+        return good + b'\x00\x00'
     return pack(stream(variant))
 
 

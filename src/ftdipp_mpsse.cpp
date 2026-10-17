@@ -523,7 +523,7 @@ int FTDIpp_MPSSE::mpsse_write()
 		printError("mpsse_write: fail to write with error " +
 				std::to_string(ret) + " (" +
 				std::string(ftdi_get_error_string(_ftdi)) + ")");
-		return ret;
+		return (ret < 0) ? ret : -1;
 	}
 
 	_num = 0;

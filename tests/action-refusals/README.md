@@ -20,6 +20,16 @@ No arm can reach a cable:
   `(block, half, row)` groups. Each frame carries its own address, so a dump
   label can be checked against its content. `--pads` and `--pad-word` model a
   device whose pads differ; `--replay` serves recorded dumps instead.
+  `--ir-log` writes every instruction latched at UPDATE-IR, so an arm can
+  assert that `--partial` never issues JPROGRAM, JSTART or JSHUTDOWN while a
+  full load does. `--user1-byte` answers USER1 with a fixed byte pattern, a
+  stable responder that is not a flash. `--short-shift` answers one shift
+  with half its bytes and half-closes the socket, as a proxy that dies
+  mid-reply; the model keeps consuming commands and answers none of them,
+  so only the first error a cut provokes is under test.
+  `--cfg-out-shift-log` names the shifts that carried CFG_OUT bits, so an
+  arm can pick the one to cut, and `--tlr-shift-log` names the shifts that
+  left the TAP in Test-Logic-Reset.
 
 `OFL_RECORDED_CROSSING_DIR=<dir>` adds two arms that replay a silicon
 readback across a half and a row boundary. The directory must hold
@@ -31,5 +41,6 @@ crossing read, relabelled, equals the two non-crossing reads joined.
 streams the payload arms load: `good` is a one-frame partial, and every other
 variant adds one thing a partial must not carry.
 
-The frame-space functions have a unit test, built with
-`-DENABLE_UNIT_TESTS=ON` and run by `ctest`.
+The frame-space functions, the FTDI MPSSE `writeTDI` and `writeTMS`
+transport error paths and the short-write path of `mpsse_write` have unit
+tests, built with `-DENABLE_UNIT_TESTS=ON` and run by `ctest`.
