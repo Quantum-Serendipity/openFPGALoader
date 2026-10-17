@@ -1601,15 +1601,41 @@ bool Xilinx::readbackFrames(uint32_t far, uint32_t count,
 	return true;
 }
 
+std::unique_ptr<ConfigBitstreamParser> Xilinx::parse_bitfile(
+	const std::string &filename, const std::string &extension, bool reverse,
+	bool verbose)
+{
+	std::unique_ptr<ConfigBitstreamParser> parser;
+	printInfo("Open file " + filename + " ", false);
+	try {
+		if (extension == "bit")
+			parser.reset(new BitParser(filename, reverse, verbose));
+		else if (extension == "mcs")
+			parser.reset(new McsParser(filename, reverse, verbose));
+		else
+			parser.reset(new RawParser(filename, reverse));
+	} catch (const std::exception &e) {
+		throw std::runtime_error("Unable to open '" + filename + "': " +
+			e.what());
+	}
+	printSuccess("DONE");
+
+	printInfo("Parse file ", false);
+	if (parser->parse() == EXIT_FAILURE)
+		throw std::runtime_error("Failed to parse bitstream '" + filename +
+			"'");
+	printSuccess("DONE");
+	return parser;
+}
+
 void Xilinx::checkPartialPayload(const std::string &filename,
 	const std::string &file_type, int8_t verbose)
 {
 	std::string ext = file_type;
 	if (ext.empty())
 		ext = filename.substr(filename.find_last_of(".") + 1);
-	ConfigBitstreamParser *parser = nullptr;
-	open_bitfile(filename, ext, &parser, false, verbose > 0);
-	std::unique_ptr<ConfigBitstreamParser> bit(parser);
+	std::unique_ptr<ConfigBitstreamParser> bit =
+		parse_bitfile(filename, ext, false, verbose > 0);
 	checkPayloadStream(bit->getData(),
 		static_cast<size_t>(bit->getLength()) / 8, false, filename);
 }
@@ -1656,8 +1682,9 @@ void Xilinx::checkPayloadStream(const uint8_t *data, size_t nbytes,
 		throw std::runtime_error("--partial refused: '" + filename +
 			"' " + why + " (word " + std::to_string(at) + " of the stream); "
 			"a partial bitstream carries only FAR, FDRI, MFWR, CRC, IDCODE, "
-			"MASK, CTL0 bits 8 and 10, and the commands NULL, WCFG, MFW, "
-			"RCRC and DESYNC");
+			"a single-word AXSS, MASK, CTL0 bits 8 and 10, and the "
+			"commands NULL, WCFG, MFW, RCRC and DESYNC, and ends with a "
+			"CRC write after its last FDRI packet and a DESYNC");
 	};
 	const size_t npos = static_cast<size_t>(-1);
 	auto find_sync = [&byte_at, nbytes, npos](size_t from_bit) {
@@ -1683,12 +1710,22 @@ void Xilinx::checkPayloadStream(const uint8_t *data, size_t nbytes,
 		return at / 32 + 1;
 	};
 
+	if (nbytes % 4)
+		refuse(nwords, "is not a whole number of 32-bit words");
+
 	size_t i = resync(0);
 	if (i == npos)
 		refuse(nwords, "has no sync word, so it is not a configuration stream");
 
 	uint32_t reg = 0, mask = 0xffffffff;
 	bool have_reg = false;
+	bool crc_since_fdri = false, ended_desync = false;
+	auto finish = [&]() {
+		if (!crc_since_fdri)
+			refuse(nwords, "has no CRC write after its last FDRI packet");
+		if (!ended_desync)
+			refuse(nwords, "does not end with a DESYNC command");
+	};
 	while (i < nwords) {
 		const size_t at = i;
 		const uint32_t h = word(i++);
@@ -1697,9 +1734,13 @@ void Xilinx::checkPayloadStream(const uint8_t *data, size_t nbytes,
 		const uint32_t type = h >> 29, op = (h >> 27) & 0x3;
 		uint32_t n = 0;
 		if (type == 1) {
-			reg = (h >> 13) & 0x3fff;
 			n = h & 0x7ff;
-			have_reg = true;
+			if (op == 0) {
+				have_reg = false;
+			} else {
+				reg = (h >> 13) & 0x3fff;
+				have_reg = true;
+			}
 		} else if (type == 2 && have_reg) {
 			n = h & 0x7ffffff;
 		} else {
@@ -1720,8 +1761,20 @@ void Xilinx::checkPayloadStream(const uint8_t *data, size_t nbytes,
 			refuse(at, "ends inside a packet writing " +
 				name_of(reg_names, reg));
 		bool desync = false;
+		ended_desync = false;
 		switch (reg) {
-		case 0x00: case 0x01: case 0x02: case 0x0a: case 0x0c:
+		case 0x00:
+			crc_since_fdri = true;
+			break;
+		case 0x02:
+			crc_since_fdri = false;
+			break;
+		case 0x01: case 0x0a: case 0x0c:
+			break;
+		case 0x0d:
+			if (type != 1 || n != 1)
+				refuse(at, "writes AXSS with other than a single-word "
+					"Type 1 packet");
 			break;
 		case 0x06:
 			if (n)
@@ -1751,11 +1804,13 @@ void Xilinx::checkPayloadStream(const uint8_t *data, size_t nbytes,
 		}
 		i += n;
 		if (desync) {
+			ended_desync = true;
 			i = resync(i);
 			if (i == npos)
-				return;
+				return finish();
 		}
 	}
+	finish();
 }
 
 void Xilinx::displayRegister(const std::string reg_name, const uint32_t reg_val) {
@@ -2769,6 +2824,7 @@ int Xilinx::spi_put(uint8_t cmd,
 
 	int xfer_len = len + 1 + ((rx == NULL) ? 0 : 1);
 	uint8_t jtx[xfer_len];
+	memset(jtx, 0, xfer_len);
 	jtx[0] = McsParser::reverseByte(cmd);
 	/* uint8_t jtx[xfer_len] = {McsParser::reverseByte(cmd)}; */
 	uint8_t jrx[xfer_len];
@@ -2795,6 +2851,7 @@ int Xilinx::spi_put(const uint8_t *tx, uint8_t *rx, uint32_t len)
 {
 	int xfer_len = len + ((rx == NULL) ? 0 : 1);
 	uint8_t jtx[xfer_len];
+	memset(jtx, 0, xfer_len);
 	uint8_t jrx[xfer_len];
 	if (tx != NULL) {
 		for (uint32_t i=0; i < len; i++)

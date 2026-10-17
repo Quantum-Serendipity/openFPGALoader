@@ -257,8 +257,21 @@ int FtdiJtagMPSSE::writeTDI(const uint8_t *tdi, uint8_t *tdo, uint32_t len, bool
 	display("%s len : %u %d %d %d last: %d\n", __func__, len, real_len, nb_byte,
 		nb_bit, last);
 
+	auto check = [this](int ret, const char *what) {
+		if (ret < 0)
+			throw std::runtime_error(std::string("FTDI writeTDI: ") + what +
+				" failed (" + ftdi_get_error_string(_ftdi) + ")");
+	};
+	auto read_exact = [&](unsigned char *buf, int n) {
+		const int got = mpsse_read(buf, n);
+		if (got != n)
+			throw std::runtime_error("FTDI writeTDI: read " +
+				std::to_string(got) + " of " + std::to_string(n) +
+				" bytes (" + ftdi_get_error_string(_ftdi) + ")");
+	};
+
 	if ((nb_byte + _num + 3) > _buffer_size)
-		mpsse_write();
+		check(mpsse_write(), "write");
 
 	if ((nb_byte * 8) + nb_bit != real_len) {
 		printf("pas cool\n");
@@ -277,24 +290,24 @@ int FtdiJtagMPSSE::writeTDI(const uint8_t *tdi, uint8_t *tdo, uint32_t len, bool
 		int xfer_len = (nb_byte > xfer) ? xfer : nb_byte;
 		tx_buf[1] = (((xfer_len - 1)     ) & 0xff);  // low
 		tx_buf[2] = (((xfer_len - 1) >> 8) & 0xff);  // high
-		mpsse_store(tx_buf, 3);
+		check(mpsse_store(tx_buf, 3), "store");
 		if (tdi) {
 			if (use_msb_first) {
 				for (int i = 0; i < xfer_len; i++) {
 					rev[i] = bit_reverse(tx_ptr[i]); 
 				}
 			}
-			mpsse_store(use_msb_first ? rev : tx_ptr, xfer_len);
+			check(mpsse_store(use_msb_first ? rev : tx_ptr, xfer_len), "store");
 			tx_ptr += xfer_len;
 		}
 		if (tdo) {
-			mpsse_read(rx_ptr, xfer_len);
+			read_exact(rx_ptr, xfer_len);
 			rx_ptr += xfer_len;
 		} else if (_ch552WA) {
-			mpsse_write();
+			check(mpsse_write(), "write");
 			ftdi_read_data(_ftdi, c, xfer_len);
 		} else if (!last) {
-			mpsse_write();
+			check(mpsse_write(), "write");
 		}
 		nb_byte -= xfer_len;
 	}
@@ -308,13 +321,13 @@ int FtdiJtagMPSSE::writeTDI(const uint8_t *tdi, uint8_t *tdo, uint32_t len, bool
 		tx_buf[0] |= MPSSE_BITMODE;
 		tx_buf[0] |= MPSSE_LSB;
 		tx_buf[1] = nb_bit - 1;
-		mpsse_store(tx_buf, 2);
+		check(mpsse_store(tx_buf, 2), "store");
 		if (tdi) {
 			display("%s last_bit %x size %d\n", __func__, last_bit, nb_bit-1);
-			mpsse_store(last_bit);
+			check(mpsse_store(last_bit), "store");
 		}
 		if (tdo && !last) {
-			mpsse_read(rx_ptr, 1);
+			read_exact(rx_ptr, 1);
 			double_write = false;
 			/* realign we have read nb_bit
 			 * since LSB add bit by the left and shift
@@ -324,15 +337,15 @@ int FtdiJtagMPSSE::writeTDI(const uint8_t *tdi, uint8_t *tdo, uint32_t len, bool
 			display("%s %x\n", __func__, *rx_ptr);
 		} else if (_ch552WA) {
 			if (tdo) {
-				mpsse_read(rx_ptr, 1);
+				read_exact(rx_ptr, 1);
 				double_write = false;
 				*rx_ptr >>= (8 - nb_bit);
 			} else {
-				mpsse_write();
+				check(mpsse_write(), "write");
 				ftdi_read_data(_ftdi, c, nb_bit);
 			}
 		} else if (!last) {
-			mpsse_write();
+			check(mpsse_write(), "write");
 		}
 	}
 
@@ -354,11 +367,11 @@ int FtdiJtagMPSSE::writeTDI(const uint8_t *tdi, uint8_t *tdo, uint32_t len, bool
 		tx_buf[1] = 0x0;  // send 1bit
 		tx_buf[2] = ((last_bit) ? 0x81 : 0x01);  // we know in TMS tdi is bit 7
 							// and to move to EXIT_XR TMS = 1
-		mpsse_store(tx_buf, 3);
+		check(mpsse_store(tx_buf, 3), "store");
 		if (tdo) {
 			unsigned char c[2];
 			int index = 0;
-			mpsse_read(c, 1 + ((double_write)?1:0));
+			read_exact(c, 1 + ((double_write)?1:0));
 			if (double_write) {
 				*rx_ptr = c[index] >> (8-nb_bit);
 				index++;
@@ -366,10 +379,10 @@ int FtdiJtagMPSSE::writeTDI(const uint8_t *tdi, uint8_t *tdo, uint32_t len, bool
 			/* in this case for 1 one it's always bit 7 */
 			*rx_ptr |= (((c[index]) & 0x80) >> (7 - nb_bit));
 		} else if (_ch552WA) {
-			mpsse_write();
+			check(mpsse_write(), "write");
 			ftdi_read_data(_ftdi, c, 1);
 		} else {
-			mpsse_write();
+			check(mpsse_write(), "write");
 		}
 	}
 

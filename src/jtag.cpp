@@ -8,6 +8,7 @@
 #include <iostream>
 #include <map>
 #include <sstream>
+#include <stdexcept>
 #include <unistd.h>
 #include <vector>
 #include <string>
@@ -425,7 +426,10 @@ void Jtag::go_test_logic_reset()
 int Jtag::read_write(const uint8_t *tdi, unsigned char *tdo, int len, char last)
 {
 	flushTMS(false);
-	_jtag->writeTDI(tdi, tdo, len, last);
+	const int ret = _jtag->writeTDI(tdi, tdo, len, last);
+	if (ret < 0)
+		throw std::runtime_error("JTAG shift of " + std::to_string(len) +
+			" bits failed (" + std::to_string(ret) + ")");
 	if (last == 1)
 		_state = (_state == SHIFT_DR) ? EXIT1_DR : EXIT1_IR;
 	return 0;

@@ -132,8 +132,8 @@ int XVC_client::writeTDI(const uint8_t *tx, uint8_t *rx, uint32_t len, bool end)
 {
 	if (len == 0)  // nothing to do
 		return 0;
-	if (_num_bits != 0)  // flush buffer to simplify next step
-		flush();
+	if (_num_bits != 0 && flush() < 0)
+		throw std::runtime_error("xvc ll_write fails");
 
 	uint32_t xfer_len = _buffer_size * 8;  // default to buffer capacity
 	uint8_t tms = (_last_tms) ? 0xff : 0x00;  // set tms byte
@@ -170,8 +170,8 @@ int XVC_client::toggleClk(uint8_t tms, uint8_t tdi, uint32_t clk_len)
 	// nothing to do
 	if (clk_len == 0)
 		return 0;
-	if (_num_bits != 0)
-		flush();
+	if (_num_bits != 0 && flush() < 0)
+		throw std::runtime_error("xvc ll_write fails");
 
 	_last_tms = tms;
 	_last_tdi = tdi;
@@ -200,7 +200,7 @@ int XVC_client::toggleClk(uint8_t tms, uint8_t tdi, uint32_t clk_len)
 
 int XVC_client::flush()
 {
-	return ll_write(NULL);
+	return ll_write(NULL) ? 1 : -1;
 }
 
 
@@ -214,7 +214,7 @@ int XVC_client::setClkFreq(uint32_t clkHz)
 	_xfer_buf[2] = static_cast<uint8_t>((clk_period >> 16) & 0xff);
 	_xfer_buf[3] = static_cast<uint8_t>((clk_period >> 24) & 0xff);
 
-	if (xfer_pkt("settck:", _xfer_buf, 4, _xfer_buf, 4) <= 0) {
+	if (xfer_pkt("settck:", _xfer_buf, 4, _xfer_buf, 4, true) != 4) {
 		printError("setClkFreq: fail to configure frequency");
 		return -EXIT_FAILURE;
 	}
@@ -311,31 +311,11 @@ ssize_t XVC_client::xfer_pkt(const std::string &instr,
 		} else if (len == 0) {
 			fprintf(stderr, "Client orderly shut down the connection.\n");
 		}
-		/* ONE-BYTE HEAP OVERFLOW, GUARDED.
-		 *
-		 * This was `rx[len] = '\0';` unconditionally.  Two ways it writes
-		 * outside `rx`:
-		 *
-		 *   len == rx_size  ->  rx[rx_size], one past the end.  Not a corner
-		 *     case: ll_write() calls this as
-		 *       xfer_pkt("shift:", _xfer_buf, 2*numbytes + 4, _tditdo, numbytes)
-		 *     and _tditdo is exactly _buffer_size bytes (allocated in the
-		 *     constructor above), while writeTDI fills and flushes at
-		 *     _num_bits == _buffer_size * 8.  So every maximally-sized transfer
-		 *     -- which is every toggleClk burst and most of a bitstream load --
-		 *     writes one byte past a 1024-byte heap allocation.  It has not
-		 *     crashed because glibc's usable chunk for a 1024-byte malloc is
-		 *     larger than 1024 and the byte lands in slack.  That is luck.
-		 *
-		 *   len < 0  ->  rx[-1], one BEFORE the start, on any recv() error.
-		 *     The error is reported and then written through.
-		 *
-		 * The terminator exists for the two text replies (getinfo:, settck:),
-		 * which are far shorter than their buffers.  The binary TDO reply never
-		 * needs it: ll_write() memcpy's exactly `numbytes` and reads no
-		 * terminator.  So terminating only when the reply left room is
-		 * behaviour-preserving for every caller in the tree.
-		 */
+		if (rx_exact && static_cast<uint32_t>(len) != rx_size) {
+			printError("XVC reply of " + std::to_string(len) +
+				" bytes, " + std::to_string(rx_size) + " expected");
+			return -1;
+		}
 		if (len >= 0 && static_cast<uint32_t>(len) < rx_size)
 			rx[len] = '\0';
 		if (_verbose) {
@@ -353,7 +333,7 @@ ssize_t XVC_client::xfer_pkt(const std::string &instr,
 
 bool XVC_client::ll_write(uint8_t *tdo)
 {
-	int ret;
+	ssize_t ret;
 	if (_num_bits == 0)
 		return true;
 	uint32_t numbytes = (_num_bits + 7) >> 3;
@@ -366,7 +346,7 @@ bool XVC_client::ll_write(uint8_t *tdo)
 	memcpy(_xfer_buf + 4 + numbytes, _tditdo, numbytes);
 
 	if ((ret = xfer_pkt("shift:\0", _xfer_buf, (2 * numbytes) + 4,
-					_tditdo, numbytes, true)) < 0)
+					_tditdo, numbytes, true)) != static_cast<ssize_t>(numbytes))
 		return false;
 	_num_bits = 0;  // clear counter
 

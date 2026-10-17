@@ -665,6 +665,16 @@ if (ENABLE_UNIT_TESTS)
 	)
 	target_include_directories(xilinxFrameSpaceTest PRIVATE src)
 	add_test(NAME xilinxFrameSpace COMMAND xilinxFrameSpaceTest)
+	if (USE_LIBFTDI)
+		add_executable(ftdiJtagMPSSETest
+			tests/ftdi-transport/ftdiJtagMPSSETest.cpp
+			src/ftdiJtagMPSSE.cpp
+			src/display.cpp
+		)
+		target_include_directories(ftdiJtagMPSSETest PRIVATE src
+			${LIBFTDI_INCLUDE_DIRS} ${LIBUSB_INCLUDE_DIRS})
+		add_test(NAME ftdiJtagMPSSE COMMAND ftdiJtagMPSSETest)
+	endif()
 endif()
 
 include_directories(

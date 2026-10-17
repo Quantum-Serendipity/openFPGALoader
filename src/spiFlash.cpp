@@ -951,6 +951,13 @@ void SPIFlash::display_info()
 	SFDP sfdp;
 	sfdp.parse([this](uint32_t addr, uint8_t *buf, uint32_t len) {
 			return read_sfdp(addr, buf, len);});
+	if (!_flash_model && !sfdp.has_bfpt()) {
+		char msg[192];
+		snprintf(msg, sizeof(msg), "JEDEC ID 0x%06x is not in the flash "
+				"database and the device returned no SFDP parameter table, so "
+				"nothing confirms that a flash answered", _jedec_id >> 8);
+		throw std::runtime_error(msg);
+	}
 
 	printf("\nSPI Flash information\n");
 	printf("JEDEC ID          : 0x%06x (manufacturer 0x%02x, type 0x%02x, "

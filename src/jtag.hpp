@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <iostream>
 #include <map>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -137,7 +138,11 @@ class Jtag {
 	void go_test_logic_reset();
 	void set_state(tapState_t newState, const uint8_t tdi = 1);
 	int flushTMS(bool flush_buffer = false);
-	void flush() {flushTMS(); _jtag->flush();}
+	void flush() {
+		flushTMS();
+		if (_jtag->flush() < 0)
+			throw std::runtime_error("JTAG flush failed");
+	}
 	void setTMS(unsigned char tms);
 
 	const char *getStateName(tapState_t s);

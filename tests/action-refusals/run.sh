@@ -101,8 +101,10 @@ model_rc() {
 	fi
 }
 
-for v in good start grestore shutdown iprog cor0 wbstar ctl0-bit12 nosync truncated \
-		unaligned-sync unaligned-resync two-syncs; do
+PAYLOAD_REFUSED=(start grestore shutdown iprog cor0 wbstar ctl0-bit12 nosync truncated
+	nocrc crc-before-fdri stop-after-fdri no-desync odd-length axss-two axss-type2
+	t2-after-noop)
+for v in good axss "${PAYLOAD_REFUSED[@]}" unaligned-sync unaligned-resync two-syncs; do
 	python3 "$HERE/make_stream.py" "$v" "$T/$v.bin"
 done
 python3 "$HERE/make_stream.py" good "$T/good.bit"
@@ -166,9 +168,10 @@ refused flash_info_without_skip_reset '--skip-reset' \
 refused flash_info_refusal_names_skip_reset '--skip-load-bridge --skip-reset' \
 	--flash-info --fpga-part xc7a100tfgg484
 
-for v in start grestore shutdown iprog cor0 wbstar ctl0-bit12 nosync truncated; do
+for v in "${PAYLOAD_REFUSED[@]}"; do
 	refused "partial_payload_$v" '--partial refused' -m --partial "$T/$v.bin"
 done
+accepted partial_payload_axss_stamp -m --partial "$T/axss.bin"
 refused partial_payload_start_in_bit '--partial refused' -m --partial "$T/start.bit"
 for v in unaligned-sync unaligned-resync; do
 	refused "partial_payload_$v" 'not on a 32-bit word boundary' -m --partial "$T/$v.bin"
@@ -183,10 +186,77 @@ else
 	ok flash_info_json_stale_file_removed_on_refusal
 fi
 
-model_rc partial_clean_stat 0 'Done' -- -m --partial "$T/good.bit"
-model_rc partial_crc_error_stat 1 'CRC_ERROR' --stat 0x401079FD -- -m --partial "$T/good.bit"
-model_rc partial_id_error_stat 1 'ID_ERROR' --stat 0x4010F9FC -- -m --partial "$T/good.bit"
-model_rc partial_done_low_stat 1 'DONE' --stat 0x401039FC -- -m --partial "$T/good.bit"
+ir_log() {
+	local name=$1 log=$2 want=$3
+	shift 3
+	if [[ ! -s $log ]]; then
+		ko "$name" "the model wrote no IR log"
+		return
+	fi
+	local ir hit=0
+	for ir in "$@"; do
+		grep -qx "$ir" "$log" && hit=$((hit + 1))
+	done
+	if [[ $want == none && $hit -ne 0 ]]; then
+		ko "$name" "the IR log holds one of $*"
+	elif [[ $want == all && $hit -ne $# ]]; then
+		ko "$name" "the IR log lacks one of $*"
+	else
+		ok "$name"
+	fi
+}
+
+JPROG_JSTART_JSHUT=(0x0b 0x0c 0x0d)
+for a in clean:0:Done:0x401079FC crc_error:1:CRC_ERROR:0x401079FD \
+		id_error:1:ID_ERROR:0x4010F9FC done_low:1:DONE:0x401039FC; do
+	IFS=: read -r an aw ap as <<<"$a"
+	rm -f "$T/ir"
+	model_rc "partial_${an}_stat" "$aw" "$ap" --stat "$as" --ir-log "$T/ir" -- \
+		-m --partial "$T/good.bit"
+	ir_log "partial_${an}_stat_issues_no_jprogram_jstart_jshutdown" "$T/ir" none \
+		"${JPROG_JSTART_JSHUT[@]}"
+done
+rm -f "$T/ir"
+model_rc full_load_control 0 '' --ir-log "$T/ir" -- -m "$T/good.bit"
+ir_log full_load_control_issues_jprogram_and_jstart "$T/ir" all 0x0b 0x0c
+
+short_cfg_out_reply() {
+	local name=$1 out=$2
+	shift 2
+	rm -f "$T/shifts" "$out"
+	with_model --cfg-out-shift-log "$T/shifts" -- "$@"
+	local k
+	k=$(tail -1 "$T/shifts" 2>/dev/null)
+	if [[ $(cat "$T/rc") -ne 0 ]]; then
+		ko "$name" "the unperturbed control exited $(cat "$T/rc")"
+		return
+	elif [[ -z $k ]]; then
+		ko "$name" "no shift carried CFG_OUT bits"
+		return
+	fi
+	rm -f "$out"
+	model_rc "$name" 1 '' --short-shift "$k" -- "$@"
+	if [[ -n $out && -e $out ]]; then
+		ko "${name}_leaves_no_dump" "a dump was written"
+	elif [[ -n $out ]]; then
+		ok "${name}_leaves_no_dump"
+	fi
+}
+
+short_cfg_out_reply readback_short_cfg_out_reply "$T/sr.txt" \
+	--readback-frames 0x0:1 --readback-out "$T/sr.txt"
+short_cfg_out_reply partial_short_stat_reply '' -m --partial "$T/good.bit"
+
+rm -f "$T/fi.json"
+model_rc flash_info_non_flash_responder_refused 1 '' --user1-byte 0x02 -- \
+	--flash-info-json "$T/fi.json" --skip-load-bridge --skip-reset
+if [[ -e $T/fi.json ]]; then
+	ko flash_info_non_flash_responder_writes_no_record "a JSON record was written"
+else
+	ok flash_info_non_flash_responder_writes_no_record
+fi
+model_rc flash_info_echo_responder_reads_a_zero_id 1 'Read ID failed' -- \
+	--flash-info --skip-load-bridge --skip-reset
 model_rc partial_spartan6_idcode 1 'not a Xilinx 7-series part' --idcode 0x04001093 -- \
 	-m --partial "$T/good.bit"
 model_rc flash_info_xilinx_found_on_chain 1 'pass --skip-load-bridge --skip-reset' -- \
