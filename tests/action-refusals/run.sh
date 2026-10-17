@@ -101,10 +101,32 @@ model_rc() {
 	fi
 }
 
-PAYLOAD_REFUSED=(start grestore shutdown iprog cor0 wbstar ctl0-bit12 nosync truncated
-	nocrc crc-before-fdri stop-after-fdri no-desync odd-length axss-two axss-type2
-	t2-after-noop)
-for v in good axss "${PAYLOAD_REFUSED[@]}" unaligned-sync unaligned-resync two-syncs; do
+PAYLOAD_REFUSED=(
+	"start:issues CMD START"
+	"grestore:issues CMD GRESTORE"
+	"shutdown:issues CMD SHUTDOWN"
+	"iprog:issues CMD IPROG"
+	"cor0:writes register COR0"
+	"wbstar:writes register WBSTAR"
+	"ctl0-bit12:which covers bit 12"
+	"nosync:has no sync word"
+	"truncated:ends inside a packet"
+	"nocrc:has no CRC write after its last FDRI"
+	"crc-before-fdri:has no CRC write after its last FDRI"
+	"stop-after-fdri:has no CRC write after its last FDRI"
+	"crc-empty:writes CRC with other than a single-word"
+	"crc-two:writes CRC with other than a single-word"
+	"crc-type2:writes CRC with other than a single-word"
+	"no-desync:does not end with a DESYNC"
+	"desync-wcfg:issues a command after DESYNC"
+	"desync-15-noops:NOOPs after its DESYNC"
+	"desync-no-noops:NOOPs after its DESYNC"
+	"odd-length:is not a whole number of 32-bit words"
+	"axss-two:writes AXSS with other than a single-word"
+	"axss-type2:writes AXSS with other than a single-word"
+	"t2-after-noop:has a malformed packet header"
+)
+for v in good axss "${PAYLOAD_REFUSED[@]%%:*}" unaligned-sync unaligned-resync two-syncs; do
 	python3 "$HERE/make_stream.py" "$v" "$T/$v.bin"
 done
 python3 "$HERE/make_stream.py" good "$T/good.bit"
@@ -168,8 +190,9 @@ refused flash_info_without_skip_reset '--skip-reset' \
 refused flash_info_refusal_names_skip_reset '--skip-load-bridge --skip-reset' \
 	--flash-info --fpga-part xc7a100tfgg484
 
-for v in "${PAYLOAD_REFUSED[@]}"; do
-	refused "partial_payload_$v" '--partial refused' -m --partial "$T/$v.bin"
+for vp in "${PAYLOAD_REFUSED[@]}"; do
+	v=${vp%%:*}
+	refused "partial_payload_$v" "${vp#*:}" -m --partial "$T/$v.bin"
 done
 accepted partial_payload_axss_stamp -m --partial "$T/axss.bin"
 refused partial_payload_start_in_bit '--partial refused' -m --partial "$T/start.bit"
@@ -246,6 +269,33 @@ short_cfg_out_reply() {
 short_cfg_out_reply readback_short_cfg_out_reply "$T/sr.txt" \
 	--readback-frames 0x0:1 --readback-out "$T/sr.txt"
 short_cfg_out_reply partial_short_stat_reply '' -m --partial "$T/good.bit"
+
+rm -f "$T/tlr"
+with_model --tlr-shift-log "$T/tlr" -- --detect
+k=$(head -1 "$T/tlr" 2>/dev/null)
+if [[ $(cat "$T/rc") -ne 0 || -z $k ]]; then
+	ko detect_short_tlr_flush_reply "the unperturbed control exited $(cat "$T/rc") or no shift ended in TLR"
+else
+	model_rc detect_short_tlr_flush_reply 1 'JTAG TMS flush failed' --short-shift "$k" -- --detect
+fi
+
+rm -f "$T/shifts"
+with_model --cfg-out-shift-log "$T/shifts" -- --read-register STAT
+k=$(tail -1 "$T/shifts" 2>/dev/null)
+if [[ $(cat "$T/rc") -ne 0 || -z $k ]]; then
+	ko read_register_short_reply_exits_through_main "the unperturbed control exited $(cat "$T/rc") or no shift carried CFG_OUT bits"
+else
+	with_model --short-shift "$k" -- --read-register STAT
+	if [[ $(cat "$T/rc") -ne 1 ]]; then
+		ko read_register_short_reply_exits_through_main "exit $(cat "$T/rc"), expected 1"
+	elif grep -q 'terminate called' "$T/out"; then
+		ko read_register_short_reply_exits_through_main "an uncaught exception reached std::terminate"
+	elif ! grep -qF 'Error: ' "$T/out"; then
+		ko read_register_short_reply_exits_through_main "no 'Error: ' in the output"
+	else
+		ok read_register_short_reply_exits_through_main
+	fi
+fi
 
 rm -f "$T/fi.json"
 model_rc flash_info_non_flash_responder_refused 1 '' --user1-byte 0x02 -- \

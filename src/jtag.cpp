@@ -405,11 +405,16 @@ int Jtag::flushTMS(bool flush_buffer)
 
 		ret = _jtag->writeTMS(_tms_buffer, _num_tms, flush_buffer, _curr_tdi);
 
-		/* reset buffer and number of bits */
 		memset(_tms_buffer, 0, _tms_buffer_size);
+		const int nbits = _num_tms;
 		_num_tms = 0;
+		if (ret < 0)
+			throw std::runtime_error("JTAG TMS shift of " +
+				std::to_string(nbits) + " bits failed (" +
+				std::to_string(ret) + ")");
 	} else if (flush_buffer) {
-		_jtag->flush();
+		if (_jtag->flush() < 0)
+			throw std::runtime_error("JTAG TMS flush failed");
 	}
 	return ret;
 }

@@ -234,7 +234,7 @@ def recv_command(conn):
     return cmd
 
 
-def serve(conn, tap, short_shift=None, shifts=None):
+def serve(conn, tap, short_shift=None, shifts=None, tlr_shifts=None):
     n_shift = 0
     muted = False
 
@@ -265,6 +265,8 @@ def serve(conn, tap, short_shift=None, shifts=None):
             n_shift += 1
             if shifts is not None and tap.cfg_out_bits != before:
                 shifts.append(n_shift)
+            if tlr_shifts is not None and tap.state == 'TLR':
+                tlr_shifts.append(n_shift)
             if n_shift == short_shift:
                 send(bytes(out[:nbytes // 2]))
                 conn.shutdown(socket.SHUT_WR)
@@ -327,6 +329,7 @@ def main():
     p.add_argument('--user1-byte', type=lambda s: int(s, 0))
     p.add_argument('--short-shift', type=int)
     p.add_argument('--cfg-out-shift-log')
+    p.add_argument('--tlr-shift-log')
     a = p.parse_args()
     if a.compare_dump:
         want = [f for x in a.expect for f in read_dump(x)]
@@ -361,9 +364,10 @@ def main():
     tap = Tap(a.idcode, a.stat, not a.done_low, a.pads, a.pad_word, replay,
               a.user1_byte)
     shifts = []
+    tlr_shifts = []
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     try:
-        serve(conn, tap, a.short_shift, shifts)
+        serve(conn, tap, a.short_shift, shifts, tlr_shifts)
     finally:
         if a.ir_log:
             with open(a.ir_log, 'w') as f:
@@ -371,6 +375,9 @@ def main():
         if a.cfg_out_shift_log:
             with open(a.cfg_out_shift_log, 'w') as f:
                 f.write(''.join('%d\n' % x for x in shifts))
+        if a.tlr_shift_log:
+            with open(a.tlr_shift_log, 'w') as f:
+                f.write(''.join('%d\n' % x for x in tlr_shifts))
     conn.close()
     srv.close()
 

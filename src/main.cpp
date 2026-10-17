@@ -789,108 +789,105 @@ int main(int argc, char **argv)
 		}
 	}
 
-	if (args.conmcu == true) {
-		fpga->connectJtagToMCU();
-	}
+	try {
+		if (args.conmcu == true) {
+			fpga->connectJtagToMCU();
+		}
 
-	/* read internal register */
-	if (!args.read_register.empty()) {
-		fpga->read_register(args.read_register);
-	}
+		if (!args.read_register.empty()) {
+			fpga->read_register(args.read_register);
+		}
 
-	/* read configuration frames back out of a running device (Unit H14).
-	 * Placed after read_register and before every flash action for the same
-	 * reason the refusals in parse_opt exist: this is a READ, and it must not
-	 * end up sharing an invocation with a write. */
-	if (!args.readback_frames.empty()) {
+		if (!args.readback_frames.empty()) {
 #ifdef ENABLE_XILINX_SUPPORT
-		if (xilinx_fpga == NULL) {
-			printError("Error: --readback-frames is a Xilinx 7-series feature "
-				"and the device on the chain is not a Xilinx FPGA");
-			delete(fpga);
-			delete(jtag);
-			return EXIT_FAILURE;
-		}
-		uint32_t rb_far = 0, rb_count = 0;
-		std::string why;
-		if (!parse_readback_spec(args.readback_frames, &rb_far, &rb_count,
-				&why)) {
-			printError("Error: --readback-frames " + why);
-			delete(fpga);
-			delete(jtag);
-			return EXIT_FAILURE;
-		}
-		try {
-			xilinx_fpga->readbackFrames(rb_far, rb_count, args.readback_out,
-				args.readback_far_addrs);
-		} catch (std::exception &e) {
-			printError("Error: " + std::string(e.what()));
-			delete(fpga);
-			delete(jtag);
-			return EXIT_FAILURE;
-		}
+			if (xilinx_fpga == NULL) {
+				printError("Error: --readback-frames is a Xilinx 7-series feature "
+					"and the device on the chain is not a Xilinx FPGA");
+				delete(fpga);
+				delete(jtag);
+				return EXIT_FAILURE;
+			}
+			uint32_t rb_far = 0, rb_count = 0;
+			std::string why;
+			if (!parse_readback_spec(args.readback_frames, &rb_far, &rb_count,
+					&why)) {
+				printError("Error: --readback-frames " + why);
+				delete(fpga);
+				delete(jtag);
+				return EXIT_FAILURE;
+			}
+			try {
+				xilinx_fpga->readbackFrames(rb_far, rb_count, args.readback_out,
+					args.readback_far_addrs);
+			} catch (std::exception &e) {
+				printError("Error: " + std::string(e.what()));
+				delete(fpga);
+				delete(jtag);
+				return EXIT_FAILURE;
+			}
 #else
-		printError("Support for Xilinx FPGAs was not enabled at compile time");
+			printError("Support for Xilinx FPGAs was not enabled at compile time");
+			delete(fpga);
+			delete(jtag);
+			return EXIT_FAILURE;
+#endif
+		}
+
+		if (args.unprotect_flash && args.bit_file.empty()) {
+			fpga->unprotect_flash();
+		}
+
+		if (args.bulk_erase_flash && args.bit_file.empty()) {
+			fpga->bulk_erase_flash();
+		}
+
+		if (args.protect_flash != 0) {
+			fpga->protect_flash(args.protect_flash);
+		}
+
+		if (args.enable_quad || args.disable_quad) {
+			bool ret = true;
+			if (args.enable_quad && args.disable_quad) {
+				printError("Error: can't set enable and disable Quad mode at same time");
+				ret = false;
+			} else  if (!fpga->set_quad_bit(args.enable_quad)) {
+				printError("Error: Failed to enable/disable Quad mode");
+				ret = false;
+			}
+
+			if (!ret) {
+				delete(fpga);
+				delete(jtag);
+				return EXIT_FAILURE;
+			}
+		}
+
+		if (args.detect_flash != 0) {
+			if (!fpga->detect_flash(args.flash_info) ||
+					(!args.flash_info_json.empty() &&
+					 !write_flash_info_json(args.flash_info_json))) {
+				delete(fpga);
+				delete(jtag);
+				return EXIT_FAILURE;
+			}
+		}
+
+		if (args.prg_type == Device::RD_FLASH) {
+			if (args.file_size == 0) {
+				printError("Error: 0 size for dump");
+			} else {
+				fpga->dumpFlash(args.offset, args.file_size);
+			}
+		}
+
+		if (args.reset)
+			fpga->reset();
+	} catch (std::exception &e) {
+		printError("Error: " + std::string(e.what()));
 		delete(fpga);
 		delete(jtag);
 		return EXIT_FAILURE;
-#endif
 	}
-
-	/* unprotect SPI flash */
-	if (args.unprotect_flash && args.bit_file.empty()) {
-		fpga->unprotect_flash();
-	}
-
-	/* bulk erase SPI flash */
-	if (args.bulk_erase_flash && args.bit_file.empty()) {
-		fpga->bulk_erase_flash();
-	}
-
-	/* protect SPI flash */
-	if (args.protect_flash != 0) {
-		fpga->protect_flash(args.protect_flash);
-	}
-
-	/* Enable/disable SPI Flash quad mode */
-	if (args.enable_quad || args.disable_quad) {
-		bool ret = true;
-		if (args.enable_quad && args.disable_quad) {
-			printError("Error: can't set enable and disable Quad mode at same time");
-			ret = false;
-		} else  if (!fpga->set_quad_bit(args.enable_quad)) {
-			printError("Error: Failed to enable/disable Quad mode");
-			ret = false;
-		}
-
-		if (!ret) {
-			delete(fpga);
-			delete(jtag);
-			return EXIT_FAILURE;
-		}
-	}
-
-	/* detect/display flash */
-	if (args.detect_flash != 0) {
-		if (!fpga->detect_flash(args.flash_info) ||
-				(!args.flash_info_json.empty() &&
-				 !write_flash_info_json(args.flash_info_json))) {
-			delete(fpga);
-			delete(jtag);
-			return EXIT_FAILURE;
-		}
-	}
-
-	if (args.prg_type == Device::RD_FLASH) {
-		if (args.file_size == 0) {
-			printError("Error: 0 size for dump");
-		} else {
-			fpga->dumpFlash(args.offset, args.file_size);
-		}
-	}
-
-	if (args.reset)
-		fpga->reset();
 
 	delete(fpga);
 	delete(jtag);

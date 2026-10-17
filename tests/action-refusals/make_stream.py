@@ -46,13 +46,25 @@ def stream(variant):
         words += [0x3001A000, 0x50000001, 0x5A5A0001]
     if variant == 't2-after-noop':
         words += [0x30008000, NOOP, 0x50000001, CMD['START']]
-    if variant not in ('nocrc', 'crc-before-fdri'):
+    if variant == 'crc-empty':
+        words += [0x30000000]
+    elif variant == 'crc-two':
+        words += w1('CRC', 0x00000000, 0x00000000)
+    elif variant == 'crc-type2':
+        words += [0x30000000, 0x50000001, 0x00000000]
+    elif variant not in ('nocrc', 'crc-before-fdri'):
         words += w1('CRC', 0x00000000)
     if variant == 'truncated':
         words += [0x30008002, CMD['DESYNC']]
         return words
     if variant == 'no-desync':
         return words + [NOOP] * 16
+    if variant == 'desync-wcfg':
+        return words + w1('CMD', CMD['DESYNC'], CMD['WCFG']) + [NOOP] * 16
+    if variant == 'desync-15-noops':
+        return words + w1('CMD', CMD['DESYNC']) + [NOOP] * 15
+    if variant == 'desync-no-noops':
+        return words + w1('CMD', CMD['DESYNC'])
     words += w1('CMD', CMD['DESYNC']) + [NOOP] * 16
     return words
 

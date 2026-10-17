@@ -674,6 +674,19 @@ if (ENABLE_UNIT_TESTS)
 		target_include_directories(ftdiJtagMPSSETest PRIVATE src
 			${LIBFTDI_INCLUDE_DIRS} ${LIBUSB_INCLUDE_DIRS})
 		add_test(NAME ftdiJtagMPSSE COMMAND ftdiJtagMPSSETest)
+		add_executable(mpsseWriteTest
+			tests/ftdi-transport/mpsseWriteTest.cpp
+			src/ftdipp_mpsse.cpp
+			src/display.cpp
+		)
+		target_include_directories(mpsseWriteTest PRIVATE src
+			${LIBFTDI_INCLUDE_DIRS} ${LIBUSB_INCLUDE_DIRS})
+		target_link_libraries(mpsseWriteTest ${LIBFTDI_LIBRARIES}
+			${LIBUSB_LIBRARIES})
+		if (ENABLE_UDEV)
+			target_link_libraries(mpsseWriteTest ${LIBUDEV_LIBRARIES})
+		endif()
+		add_test(NAME mpsseWrite COMMAND mpsseWriteTest)
 	endif()
 endif()
 

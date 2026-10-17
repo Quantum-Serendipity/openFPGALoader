@@ -11,8 +11,10 @@
 static int failures = 0;
 static int fail_read_at = -1;
 static int fail_write_at = -1;
+static int fail_store_at = -1;
 static int reads = 0;
 static int writes = 0;
+static int stores = 0;
 static unsigned char store_buf[65536];
 
 #define CHECK(cond) do { \
@@ -54,6 +56,8 @@ int FTDIpp_MPSSE::mpsse_store(unsigned char c)
 
 int FTDIpp_MPSSE::mpsse_store(unsigned char *, int len)
 {
+	if (stores++ == fail_store_at)
+		return -1;
 	if (_num + len > _buffer_size && mpsse_write() < 0)
 		return -1;
 	_num += len;
@@ -100,11 +104,22 @@ static bool shift(FtdiJtagMPSSE &j, uint32_t nbits, bool with_tdo, bool last)
 	}
 }
 
-static void reset(int read_at, int write_at)
+static bool tms(FtdiJtagMPSSE &j, uint32_t nbits, bool flush)
 {
-	reads = writes = 0;
+	unsigned char t[8] = {0x1f, 0, 0, 0, 0, 0, 0, 0};
+	try {
+		return j.writeTMS(t, nbits, flush, 0) >= 0;
+	} catch (const std::exception &) {
+		return false;
+	}
+}
+
+static void reset(int read_at, int write_at, int store_at = -1)
+{
+	reads = writes = stores = 0;
 	fail_read_at = read_at;
 	fail_write_at = write_at;
+	fail_store_at = store_at;
 }
 
 int main()
@@ -127,6 +142,16 @@ int main()
 	CHECK(!shift(j, 256, true, true));
 	reset(-1, 0);
 	CHECK(!shift(j, 256, false, false));
+	reset(-1, -1, 0);
+	CHECK(!shift(j, 256, true, true));
+
+	reset(-1, -1);
+	CHECK(tms(j, 8, true));
+	CHECK(tms(j, 5, false));
+	reset(-1, 0);
+	CHECK(!tms(j, 8, true));
+	reset(-1, -1, 1);
+	CHECK(!tms(j, 8, false));
 
 	reset(-1, -1);
 	printf("ftdiJtagMPSSE: %s\n", failures ? "FAILED" : "passed");

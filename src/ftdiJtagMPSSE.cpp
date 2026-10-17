@@ -134,6 +134,11 @@ int FtdiJtagMPSSE::writeTMS(const uint8_t *tms, uint32_t len, bool flush_buffer,
 	uint8_t buf[3]= {static_cast<unsigned char>(MPSSE_WRITE_TMS | MPSSE_LSB |
 						MPSSE_BITMODE | _write_mode),
 						0, 0};
+	auto check = [this](int ret, const char *what) {
+		if (ret < 0)
+			throw std::runtime_error(std::string("FTDI writeTMS: ") + what +
+				" failed (" + ftdi_get_error_string(_ftdi) + ")");
+	};
 	while (xfer > 0) {
 		uint8_t curr_tms = 0;
 		int bit_to_send = (xfer > 6) ? 6 : xfer;
@@ -148,27 +153,23 @@ int FtdiJtagMPSSE::writeTMS(const uint8_t *tms, uint32_t len, bool flush_buffer,
 		buf[2] |= (curr_tms << bit_to_send);
 		pos+=3;
 
-		mpsse_store(buf, 3);
+		check(mpsse_store(buf, 3), "store");
 		if (pos == iter * 3) {
 			pos = 0;
-			if (mpsse_write() < 0)
-				printf("writeTMS: error\n");
+			check(mpsse_write(), "write");
 
 			if (_ch552WA) {
 				uint8_t c[len/8+1];
-				int ret = ftdi_read_data(_ftdi, c, len/8+1);
-				if (ret != 0) {
-					printf("ret : %d\n", ret);
-				}
+				check(ftdi_read_data(_ftdi, c, len/8+1), "read");
 			}
 		}
 		xfer -= bit_to_send;
 	}
 	if (flush_buffer)
-		mpsse_write();
+		check(mpsse_write(), "write");
 	if (_ch552WA) {
 		uint8_t c[len/8+1];
-		ftdi_read_data(_ftdi, c, len/8+1);
+		check(ftdi_read_data(_ftdi, c, len/8+1), "read");
 	}
 
 	return len;
@@ -305,7 +306,7 @@ int FtdiJtagMPSSE::writeTDI(const uint8_t *tdi, uint8_t *tdo, uint32_t len, bool
 			rx_ptr += xfer_len;
 		} else if (_ch552WA) {
 			check(mpsse_write(), "write");
-			ftdi_read_data(_ftdi, c, xfer_len);
+			check(ftdi_read_data(_ftdi, c, xfer_len), "read");
 		} else if (!last) {
 			check(mpsse_write(), "write");
 		}
@@ -342,7 +343,7 @@ int FtdiJtagMPSSE::writeTDI(const uint8_t *tdi, uint8_t *tdo, uint32_t len, bool
 				*rx_ptr >>= (8 - nb_bit);
 			} else {
 				check(mpsse_write(), "write");
-				ftdi_read_data(_ftdi, c, nb_bit);
+				check(ftdi_read_data(_ftdi, c, nb_bit), "read");
 			}
 		} else if (!last) {
 			check(mpsse_write(), "write");
@@ -380,7 +381,7 @@ int FtdiJtagMPSSE::writeTDI(const uint8_t *tdi, uint8_t *tdo, uint32_t len, bool
 			*rx_ptr |= (((c[index]) & 0x80) >> (7 - nb_bit));
 		} else if (_ch552WA) {
 			check(mpsse_write(), "write");
-			ftdi_read_data(_ftdi, c, 1);
+			check(ftdi_read_data(_ftdi, c, 1), "read");
 		} else {
 			check(mpsse_write(), "write");
 		}

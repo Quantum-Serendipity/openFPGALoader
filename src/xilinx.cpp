@@ -1660,6 +1660,7 @@ void Xilinx::checkPayloadStream(const uint8_t *data, size_t nbytes,
 		{0x12, "BSPI_READ"}, {0x13, "FALL_EDGE"}
 	};
 	const uint32_t ctl0_allowed = (1u << 8) | (1u << 10);
+	const size_t post_desync_noops = 16;
 	auto name_of = [](const std::map<uint32_t, std::string> &m, uint32_t v) {
 		auto it = m.find(v);
 		char hex[16];
@@ -1684,7 +1685,8 @@ void Xilinx::checkPayloadStream(const uint8_t *data, size_t nbytes,
 			"a partial bitstream carries only FAR, FDRI, MFWR, CRC, IDCODE, "
 			"a single-word AXSS, MASK, CTL0 bits 8 and 10, and the "
 			"commands NULL, WCFG, MFW, RCRC and DESYNC, and ends with a "
-			"CRC write after its last FDRI packet and a DESYNC");
+			"single-word CRC write after its last FDRI packet and a DESYNC "
+			"followed by " + std::to_string(post_desync_noops) + " NOOPs");
 	};
 	const size_t npos = static_cast<size_t>(-1);
 	auto find_sync = [&byte_at, nbytes, npos](size_t from_bit) {
@@ -1764,6 +1766,9 @@ void Xilinx::checkPayloadStream(const uint8_t *data, size_t nbytes,
 		ended_desync = false;
 		switch (reg) {
 		case 0x00:
+			if (type != 1 || n != 1)
+				refuse(at, "writes CRC with other than a single-word "
+					"Type 1 packet");
 			crc_since_fdri = true;
 			break;
 		case 0x02:
@@ -1792,6 +1797,9 @@ void Xilinx::checkPayloadStream(const uint8_t *data, size_t nbytes,
 			for (uint32_t k = 0; k < n; k++) {
 				const uint32_t c = word(i + k);
 				if (c == 0x0d) {
+					if (k + 1 != n)
+						refuse(at, "issues a command after DESYNC in the "
+							"same CMD packet");
 					desync = true;
 				} else if (c != 0x00 && c != 0x01 && c != 0x02 &&
 						c != 0x07) {
@@ -1805,6 +1813,12 @@ void Xilinx::checkPayloadStream(const uint8_t *data, size_t nbytes,
 		i += n;
 		if (desync) {
 			ended_desync = true;
+			for (size_t k = 0; k < post_desync_noops; k++) {
+				if (i + k >= nwords || word(i + k) != 0x20000000)
+					refuse(i, "has fewer than " +
+						std::to_string(post_desync_noops) +
+						" NOOPs after its DESYNC");
+			}
 			i = resync(i);
 			if (i == npos)
 				return finish();
@@ -2876,7 +2890,7 @@ int Xilinx::spi_wait(uint8_t cmd, uint8_t mask, uint8_t cond,
 			uint32_t timeout, bool verbose)
 {
 	uint8_t rx[2];
-	uint8_t tx[2];
+	uint8_t tx[2] = {0, 0};
 	uint8_t tmp;
 	uint32_t count = 0;
 	const uint8_t shift = _jtag_chain_len;

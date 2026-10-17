@@ -180,10 +180,6 @@ int XVC_client::toggleClk(uint8_t tms, uint8_t tdi, uint32_t clk_len)
 
 	uint32_t len = clk_len;
 
-	// flush buffer before starting
-	if (_num_bits != 0)
-		flush();
-
 	memset(_tditdo, curr_tdi, _buffer_size);
 	memset(_tms, curr_tms, _buffer_size);
 	do {
