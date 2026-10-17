@@ -208,5 +208,105 @@ if [[ -w /dev/full ]]; then
 	model_rc readback_to_full_device 1 '' -- --readback-frames 0x0:1 --readback-out /dev/full
 fi
 
+labelled() {
+	local name=$1 far=$2 count=$3
+	shift 3
+	if ! python3 "$HERE/xvc_tap_model.py" --write-far-list "$T/w.far" --far "$far" \
+			--count "$count" >"$T/out" 2>&1; then
+		ko "$name" "the model has no such window"
+		return
+	fi
+	rm -f "$T/w.txt"
+	with_model "$@" -- --readback-frames "$far:$count" --readback-out "$T/w.txt" \
+		--readback-far-list "$T/w.far"
+	if [[ $(cat "$T/rc") -ne 0 ]]; then
+		ko "$name" "exit $(cat "$T/rc")"
+	elif ! python3 "$HERE/xvc_tap_model.py" --check-dump "$T/w.txt" --far "$far" \
+			--count "$count" >"$T/out" 2>&1; then
+		ko "$name" "the dump's labels or content disagree with the sweep"
+	else
+		ok "$name"
+	fi
+}
+
+refused_with_model() {
+	local name=$1 pat=$2 far=$3 count=$4
+	shift 4
+	if ! python3 "$HERE/xvc_tap_model.py" --write-far-list "$T/w.far" --far "$far" \
+			--count "$count" >"$T/out" 2>&1; then
+		ko "$name" "the model has no such window"
+		return
+	fi
+	rm -f "$T/w.txt"
+	model_rc "$name" 1 "$pat" "$@" -- --readback-frames "$far:$count" \
+		--readback-out "$T/w.txt" --readback-far-list "$T/w.far"
+	if [[ -e $T/w.txt ]]; then
+		ko "${name}_leaves_no_dump" "a dump was written"
+	else
+		ok "${name}_leaves_no_dump"
+	fi
+}
+
+labelled readback_labels_inside_one_group 0x00000F00 100
+labelled readback_labels_across_a_half 0x00021990 48
+labelled readback_labels_across_a_row 0x00401C18 80
+labelled readback_labels_across_a_block_type 0x00421990 20
+labelled readback_labels_across_two_groups 0x00820170 538
+labelled readback_labels_last_frame_of_device 0x00C2017F 1
+refused_with_model readback_nonzero_pad_refused 'pad' 0x00021990 48 --pad-word 0x1
+refused_with_model readback_device_without_pads_refused 'pad' 0x00021990 48 --pads 0
+model_rc readback_minor_past_its_column_refused 1 'minor' -- \
+	--readback-frames 0x0000009E:1 --readback-out "$T/m.txt"
+model_rc readback_column_last_minor_accepted 0 'written to' -- \
+	--readback-frames 0x0000009D:1 --readback-out "$T/m.txt"
+printf '0x00000000\n0x00000001\n0x00000003\n' >"$T/gap.far"
+model_rc readback_far_list_with_a_gap_refused 1 'sweep' -- \
+	--readback-frames 0x0:3 --readback-out "$T/m.txt" --readback-far-list "$T/gap.far"
+
+if [[ -n ${OFL_RECORDED_CROSSING_DIR:-} ]]; then
+	for b in b0:0x00021990:48 b1:0x00401C18:80; do
+		IFS=: read -r bn far count <<<"$b"
+		R=$OFL_RECORDED_CROSSING_DIR
+		python3 - "$R/$bn-right.dump" "$T/$bn-tail.dump" <<'PY'
+import sys
+lines = open(sys.argv[1]).read().split('.frame ')[1:]
+open(sys.argv[2], 'w').write(''.join('.frame ' + x for x in lines[-2:]))
+PY
+		rm -f "$T/r.txt"
+		with_model --replay "$R/$bn-cross.dump" "$T/$bn-tail.dump" -- \
+			--readback-frames "$far:$count" --readback-out "$T/r.txt" \
+			--readback-far-list "$R/$bn-cross.far"
+		if [[ $(cat "$T/rc") -ne 0 ]]; then
+			ko "readback_recorded_${bn}_crossing" "exit $(cat "$T/rc")"
+		elif ! python3 "$HERE/xvc_tap_model.py" --compare-dump "$T/r.txt" \
+				--expect "$R/$bn-left.dump" "$R/$bn-right.dump" >"$T/out" 2>&1; then
+			ko "readback_recorded_${bn}_crossing" "the dump is not left + right"
+		else
+			ok "readback_recorded_${bn}_crossing"
+		fi
+	done
+fi
+
+printf '0x100000000\n0x00000001\n' >"$T/wide.far"
+printf -- '-1\n0x00000001\n' >"$T/neg.far"
+printf '0x00000000\n0x00000000\n' >"$T/dup.far"
+printf '0x00000001\n0x00000000\n' >"$T/desc.far"
+printf '010\n011\n' >"$T/oct.far"
+printf '# header\n\n  0x00000000\r\n0x00000001 \n# tail\n' >"$T/commented.far"
+for v in wide neg oct; do
+	refused "readback_far_list_$v" 'is not a frame address' \
+		--readback-frames 0x0:2 --readback-out "$T/d.txt" --readback-far-list "$T/$v.far"
+done
+for v in dup desc; do
+	refused "readback_far_list_$v" 'ascending' \
+		--readback-frames 0x0:2 --readback-out "$T/d.txt" --readback-far-list "$T/$v.far"
+done
+accepted readback_far_list_commented --readback-frames 0x0:2 --readback-out "$T/d.txt" \
+	--readback-far-list "$T/commented.far"
+refused readback_spec_negative_far 'is not a frame address' \
+	--readback-frames=-0x0:1 --readback-out "$T/d.txt"
+refused readback_spec_octal_count 'is not a frame count' \
+	--readback-frames 0x0:010 --readback-out "$T/d.txt"
+
 echo "action-refusals: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
