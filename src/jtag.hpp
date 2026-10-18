@@ -85,6 +85,8 @@ class Jtag {
 	 * \return number of devices present
 	 */
 	size_t get_chain_len() {return _devices_list.size();}
+	unsigned get_ir_bits_before() const {return _ir_bits_before;}
+	unsigned get_ir_bits_after() const {return _ir_bits_after;}
 
 	/*!
 	 * \brief set index for targeted FPGA

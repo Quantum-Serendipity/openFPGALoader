@@ -1534,6 +1534,15 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 		}
 
 		if (!args->user_dr.empty()) {
+			for (const char *o : {"misc-device", "index-chain"}) {
+				if (result.count(o)) {
+					printError(std::string("Error: --user-dr cannot be "
+						"combined with --") + o + ": this mode requires a "
+						"single-device chain, and a neighbour declared by hand "
+						"is how a wrong IR length reaches Jtag::shiftIR");
+					return -1;
+				}
+			}
 			std::string hit = options_beside(result, {"user-dr"});
 			if (!hit.empty()) {
 				printError("Error: --user-dr cannot be combined with " +

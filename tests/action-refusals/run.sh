@@ -212,7 +212,9 @@ fi
 ir_log() {
 	local name=$1 log=$2 want=$3
 	shift 3
-	if [[ ! -s $log ]]; then
+	if [[ $want == none-or-empty && -e $log ]]; then
+		want=none
+	elif [[ ! -s $log ]]; then
 		ko "$name" "the model wrote no IR log"
 		return
 	fi
@@ -487,6 +489,29 @@ fi
 rm -f "$T/ir"
 model_rc user_dr_done_low_refused 1 'DONE is low' --done-low --ir-log "$T/ir" -- "${UD[@]}"
 ir_log user_dr_done_low_issues_no_user3 "$T/ir" none 0x22
+
+refused user_dr_with_misc_device '--user-dr cannot be combined with --misc-device' \
+	"${UD[@]}" --misc-device 0x4ba00477,4,dap
+refused user_dr_with_index_chain '--user-dr cannot be combined with --index-chain' \
+	"${UD[@]}" --index-chain 0
+UD_CFG=(0x02 0x03 0x04 0x05 0x0b 0x0c 0x0d 0x10 0x11 0x16 0x22 0x23 0x30 0x31 0x32 0x33 0x34 0x35)
+rm -f "$T/ir" "$T/ud0.tdo" "$T/ud1.tdo"
+model_rc user_dr_two_device_chain_refused 1 'requires exactly one device' \
+	--neighbour 0x4ba00477:4 --ir-log "$T/ir" -- "${UD[@]}"
+ir_log user_dr_two_device_chain_latches_no_user_or_configuration_ir "$T/ir" none-or-empty "${UD_CFG[@]}"
+rm -f "$T/ir" "$T/ud0.tdo" "$T/ud1.tdo"
+model_rc user_dr_misdeclared_neighbour_irlength_refused 1 'requires exactly one device' \
+	--neighbour-tdi 0x4ba00477:5 --ir-log "$T/ir" -- "${UD[@]}"
+ir_log user_dr_misdeclared_neighbour_latches_no_user_or_configuration_ir "$T/ir" none-or-empty "${UD_CFG[@]}"
+if [[ ! -e $T/ud0.tdo && ! -e $T/ud1.tdo ]]; then
+	ok user_dr_misdeclared_neighbour_writes_no_tdo_file
+else
+	ko user_dr_misdeclared_neighbour_writes_no_tdo_file "a TDO file exists after the refusal"
+fi
+rm -f "$T/ir" "$T/ud0.tdo" "$T/ud1.tdo"
+model_rc user_dr_ir_capture_not_01_refused 1 'are not 01' \
+	--ir-capture 0x33 --ir-log "$T/ir" -- "${UD[@]}"
+ir_log user_dr_ir_capture_not_01_issues_no_user3 "$T/ir" none 0x22
 
 echo "action-refusals: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

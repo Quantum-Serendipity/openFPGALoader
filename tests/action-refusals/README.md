@@ -4,7 +4,9 @@ Regression arms for the refusals around `--partial`, `--readback-frames`,
 `--user-dr` and `--flash-info`, and for the labelling of a `--readback-frames`
 dump. The `--user-dr` model arms assert from the IR log that the mode latches
 only USER3 and BYPASS, parks in BYPASS, and refuses before USER3 when DONE is
-low.
+low, when a second device sits on the chain (`--neighbour` on the TDO side,
+`--neighbour-tdi` on the TDI side, the latter with a mis-declared IR length),
+and when the IR capture does not read 01 (`--ir-capture`).
 
     tests/action-refusals/run.sh <path to openFPGALoader>
 

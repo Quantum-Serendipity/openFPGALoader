@@ -212,6 +212,63 @@ class Tap:
         return tdo
 
 
+class SimpleTap:
+    def __init__(self, idcode, irlen):
+        self.idcode = idcode
+        self.irlen = irlen
+        self.state = 'TLR'
+        self.ir_sr = 0
+        self.ir = None
+        self.dr = []
+
+    def clock(self, tms, tdi):
+        st = self.state
+        tdo = 0
+        if st == 'SHIR':
+            tdo = self.ir_sr & 1
+            self.ir_sr = (self.ir_sr >> 1) | (tdi << (self.irlen - 1))
+        elif st == 'SHDR':
+            tdo = self.dr.pop(0)
+            self.dr.append(tdi)
+        elif st == 'CAPIR':
+            self.ir_sr = 0x01
+        elif st == 'CAPDR':
+            if self.ir is None:
+                self.dr = [(self.idcode >> i) & 1 for i in range(32)]
+            else:
+                self.dr = [0]
+        elif st == 'UPIR':
+            self.ir = self.ir_sr & ((1 << self.irlen) - 1)
+        nxt = NEXT[st][tms]
+        if nxt == 'TLR':
+            self.ir = None
+        self.state = nxt
+        return tdo
+
+
+class Chain:
+    def __init__(self, fpga, tdo_side, tdi_side=()):
+        self.fpga = fpga
+        self.tdo_side = tdo_side
+        self.tdi_side = tdi_side
+
+    @property
+    def cfg_out_bits(self):
+        return self.fpga.cfg_out_bits
+
+    @property
+    def state(self):
+        return self.fpga.state
+
+    def clock(self, tms, tdi):
+        for t in self.tdi_side:
+            tdi = t.clock(tms, tdi)
+        out = self.fpga.clock(tms, tdi)
+        for t in self.tdo_side:
+            out = t.clock(tms, out)
+        return out
+
+
 def recv_exact(conn, n):
     buf = b''
     while len(buf) < n:
@@ -330,6 +387,9 @@ def main():
     p.add_argument('--short-shift', type=int)
     p.add_argument('--cfg-out-shift-log')
     p.add_argument('--tlr-shift-log')
+    p.add_argument('--neighbour', action='append', default=[])
+    p.add_argument('--neighbour-tdi', action='append', default=[])
+    p.add_argument('--ir-capture', type=lambda s: int(s, 0))
     a = p.parse_args()
     if a.compare_dump:
         want = [f for x in a.expect for f in read_dump(x)]
@@ -363,11 +423,22 @@ def main():
     conn.settimeout(a.accept_timeout)
     tap = Tap(a.idcode, a.stat, not a.done_low, a.pads, a.pad_word, replay,
               a.user1_byte)
+    if a.ir_capture is not None:
+        tap.ir_capture = a.ir_capture
+    def taps(specs):
+        out = []
+        for spec in specs:
+            idc, irl = spec.split(':')
+            out.append(SimpleTap(int(idc, 0), int(irl)))
+        return out
+    nb = taps(a.neighbour)
+    nbi = taps(a.neighbour_tdi)
+    dev = Chain(tap, nb, nbi) if nb or nbi else tap
     shifts = []
     tlr_shifts = []
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     try:
-        serve(conn, tap, a.short_shift, shifts, tlr_shifts)
+        serve(conn, dev, a.short_shift, shifts, tlr_shifts)
     finally:
         if a.ir_log:
             with open(a.ir_log, 'w') as f:

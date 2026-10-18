@@ -1656,7 +1656,12 @@ bool Xilinx::userDrScan(const std::vector<UserDrScan> &scans)
 	 * BYPASS into the instruction register. Every opcode it emits comes from
 	 * this table and nowhere else; adding CFG_IN, CFG_OUT, JPROGRAM, JSTART,
 	 * JSHUTDOWN, ISC_*, XSC_* or any eFUSE-programming instruction here turns
-	 * a user-register scan into a configuration or fuse write. */
+	 * a user-register scan into a configuration or fuse write. "Nowhere else"
+	 * holds only because the scan is refused unless this device is alone on
+	 * the chain with no IR padding and its IR capture reads 01: Jtag::shiftIR
+	 * pads with neighbour IR bits whose lengths come from a table, and one
+	 * mis-declared length turns USER1/USER3 into CFG_IN or JPROGRAM and
+	 * USER4 into FUSE_KEY. */
 	static const std::map<std::string, uint8_t> allowed_ir = {
 		{ "USER1",  0x02 },
 		{ "USER2",  0x03 },
@@ -1680,6 +1685,15 @@ bool Xilinx::userDrScan(const std::vector<UserDrScan> &scans)
 			"register, and the allow-list's opcodes are that family's");
 	if (scans.empty())
 		throw std::runtime_error("--user-dr refused: no scan given");
+	if (_jtag->get_chain_len() != 1 || _jtag->get_ir_bits_before() != 0 ||
+			_jtag->get_ir_bits_after() != 0)
+		throw std::runtime_error("--user-dr refused: the JTAG chain carries " +
+			std::to_string(_jtag->get_chain_len()) + " device(s) and " +
+			std::to_string(_jtag->get_ir_bits_before() +
+				_jtag->get_ir_bits_after()) +
+			" bit(s) of neighbour IR padding; this mode requires exactly one "
+			"device with none, because a mis-declared neighbour IR length "
+			"shifts a different opcode into this device");
 
 	std::vector<std::vector<uint8_t>> tdi(scans.size());
 	for (size_t i = 0; i < scans.size(); i++) {
@@ -1705,6 +1719,10 @@ bool Xilinx::userDrScan(const std::vector<UserDrScan> &scans)
 	_jtag->flush();
 	printf("Pre-scan IR capture %02x (DONE %d)\n", rx_ir[0],
 		(rx_ir[0] >> 5) & 0x01);
+	if ((rx_ir[0] & 0x03) != 0x01)
+		throw std::runtime_error("--user-dr refused: the IR capture's two low "
+			"bits are not 01, so the instruction register is not 6 bits at the "
+			"position this mode assumes");
 	if (!((rx_ir[0] >> 5) & 0x01))
 		throw std::runtime_error("--user-dr refused: DONE is low, so no "
 			"design is running and no user register answers");
@@ -1713,7 +1731,18 @@ bool Xilinx::userDrScan(const std::vector<UserDrScan> &scans)
 	for (size_t i = 0; i < scans.size(); i++) {
 		if (scans[i].chain != cur) {
 			op = ir_of("USER" + std::to_string(scans[i].chain));
-			_jtag->shiftIR(&op, NULL, _irlen, Jtag::RUN_TEST_IDLE);
+			unsigned char rx_u[2] = {0, 0};
+			_jtag->shiftIR(&op, rx_u, _irlen, Jtag::RUN_TEST_IDLE);
+			_jtag->flush();
+			if ((rx_u[0] & 0x03) != 0x01) {
+				op = bypass;
+				_jtag->shiftIR(&op, NULL, _irlen, Jtag::RUN_TEST_IDLE);
+				_jtag->flush();
+				throw std::runtime_error("--user-dr refused: the IR capture "
+					"taken while USER" + std::to_string(scans[i].chain) +
+					" was shifted does not read 01; no data register was "
+					"shifted and the IR is parked in BYPASS");
+			}
 			cur = scans[i].chain;
 		}
 		std::vector<uint8_t> tdo(tdi[i].size(), 0);
