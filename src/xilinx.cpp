@@ -6,6 +6,7 @@
 
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -1605,6 +1606,13 @@ bool Xilinx::parseUserDrSpec(const std::string &spec,
 		std::vector<UserDrScan> *scans, std::string *err)
 {
 	scans->clear();
+	for (const unsigned char c : spec) {
+		if (c < 0x20 || c == 0x7f) {
+			*err = "spec contains a control character; a scan path may "
+				"carry none";
+			return false;
+		}
+	}
 	size_t pos = 0;
 	while (true) {
 		const size_t comma = spec.find(',', pos);
@@ -1695,6 +1703,14 @@ bool Xilinx::userDrScan(const std::vector<UserDrScan> &scans)
 			"device with none, because a mis-declared neighbour IR length "
 			"shifts a different opcode into this device");
 
+	for (const auto &sc : scans) {
+		struct stat st;
+		if (lstat(sc.tdo_path.c_str(), &st) == 0)
+			throw std::runtime_error("--user-dr refused: TDO file '" +
+				sc.tdo_path + "' already exists; a TDO file is created new "
+				"and is never overwritten or followed");
+	}
+
 	std::vector<std::vector<uint8_t>> tdi(scans.size());
 	for (size_t i = 0; i < scans.size(); i++) {
 		std::ifstream f(scans[i].tdi_path, std::ios::binary);
@@ -1749,18 +1765,30 @@ bool Xilinx::userDrScan(const std::vector<UserDrScan> &scans)
 		_jtag->shiftDR(tdi[i].data(), tdo.data(),
 			static_cast<int>(tdi[i].size() * 8), Jtag::RUN_TEST_IDLE);
 		_jtag->flush();
-		const std::string tmp = scans[i].tdo_path + ".tmp";
-		std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-		out.write(reinterpret_cast<const char *>(tdo.data()),
-			static_cast<std::streamsize>(tdo.size()));
-		out.close();
-		if (!out || rename(tmp.c_str(), scans[i].tdo_path.c_str()) != 0) {
-			remove(tmp.c_str());
+		const int fd = ::open(scans[i].tdo_path.c_str(),
+			O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+		bool wrote = fd >= 0;
+		size_t done = 0;
+		while (wrote && done < tdo.size()) {
+			const ssize_t n = ::write(fd, tdo.data() + done, tdo.size() - done);
+			if (n < 0 && errno == EINTR)
+				continue;
+			if (n <= 0)
+				wrote = false;
+			else
+				done += static_cast<size_t>(n);
+		}
+		if (fd >= 0 && ::close(fd) != 0)
+			wrote = false;
+		if (!wrote) {
+			if (fd >= 0)
+				::unlink(scans[i].tdo_path.c_str());
 			op = bypass;
 			_jtag->shiftIR(&op, NULL, _irlen, Jtag::RUN_TEST_IDLE);
 			_jtag->flush();
-			throw std::runtime_error("--user-dr: writing '" +
-				scans[i].tdo_path + "' failed");
+			throw std::runtime_error("--user-dr: TDO file '" +
+				scans[i].tdo_path + "' could not be created new: it exists, "
+				"is a symbolic link, or the write failed");
 		}
 	}
 	op = bypass;

@@ -100,6 +100,7 @@ class Tap:
         self.cfg_out_bits = 0
         self.stat = stat
         self.ir_capture = 0x01 | 0x10 | (0x20 if done else 0)
+        self.ir_capture_in_bypass = None
         self.state = 'TLR'
         self.ir = IR_IDCODE
         self.ir_sr = 0
@@ -197,7 +198,10 @@ class Tap:
                 tdo = self.dr.pop(0)
                 self.dr.append(tdi)
         elif st == 'CAPIR':
-            self.ir_sr = self.ir_capture
+            if self.ir == 0x3F and self.ir_capture_in_bypass is not None:
+                self.ir_sr = self.ir_capture_in_bypass
+            else:
+                self.ir_sr = self.ir_capture
         elif st == 'CAPDR':
             self.in_n = 0
             self.user1_bit = 0
@@ -390,6 +394,7 @@ def main():
     p.add_argument('--neighbour', action='append', default=[])
     p.add_argument('--neighbour-tdi', action='append', default=[])
     p.add_argument('--ir-capture', type=lambda s: int(s, 0))
+    p.add_argument('--ir-capture-in-bypass', type=lambda s: int(s, 0))
     a = p.parse_args()
     if a.compare_dump:
         want = [f for x in a.expect for f in read_dump(x)]
@@ -425,6 +430,7 @@ def main():
               a.user1_byte)
     if a.ir_capture is not None:
         tap.ir_capture = a.ir_capture
+    tap.ir_capture_in_bypass = a.ir_capture_in_bypass
     def taps(specs):
         out = []
         for spec in specs:

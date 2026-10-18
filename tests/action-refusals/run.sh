@@ -486,7 +486,7 @@ then
 else
 	ko user_dr_model_tdo_file_is_the_one_bit_register_echo "TDO file is not TDI delayed one bit"
 fi
-rm -f "$T/ir"
+rm -f "$T/ir" "$T/ud0.tdo" "$T/ud1.tdo"
 model_rc user_dr_done_low_refused 1 'DONE is low' --done-low --ir-log "$T/ir" -- "${UD[@]}"
 ir_log user_dr_done_low_issues_no_user3 "$T/ir" none 0x22
 
@@ -512,6 +512,49 @@ rm -f "$T/ir" "$T/ud0.tdo" "$T/ud1.tdo"
 model_rc user_dr_ir_capture_not_01_refused 1 'are not 01' \
 	--ir-capture 0x33 --ir-log "$T/ir" -- "${UD[@]}"
 ir_log user_dr_ir_capture_not_01_issues_no_user3 "$T/ir" none 0x22
+
+rm -f "$T/ir" "$T/ud0.tdo" "$T/ud1.tdo"
+model_rc user_dr_user_ir_capture_not_01_refused 1 'does not read 01' \
+	--ir-capture-in-bypass 0x00 --ir-log "$T/ir" -- "${UD[@]}"
+if [[ $(tail -1 "$T/ir" 2>/dev/null) == 0x3f ]]; then
+	ok user_dr_user_ir_capture_not_01_parks_in_bypass
+else
+	ko user_dr_user_ir_capture_not_01_parks_in_bypass "last IR $(tail -1 "$T/ir" 2>/dev/null)"
+fi
+if [[ ! -e $T/ud0.tdo && ! -e $T/ud1.tdo ]]; then
+	ok user_dr_user_ir_capture_not_01_writes_no_tdo_file
+else
+	ko user_dr_user_ir_capture_not_01_writes_no_tdo_file "a TDO file exists after the refusal"
+fi
+
+refused user_dr_newline_in_path 'control character' --user-dr "3:$T/ud0.bin:$T/x"$'\n'"y.tdo"
+refused user_dr_tab_in_path 'control character' --user-dr "3:$T/ud0.bin:$T/x"$'\t'"y.tdo"
+
+rm -f "$T/ir" "$T/ud0.tdo" "$T/ud1.tdo"
+printf keep >"$T/ud0.tdo"
+model_rc user_dr_existing_tdo_refused 1 'already exists' --ir-log "$T/ir" -- "${UD[@]}"
+ir_log user_dr_existing_tdo_issues_no_user3 "$T/ir" none-or-empty 0x22
+if [[ $(cat "$T/ud0.tdo") == keep && ! -e $T/ud1.tdo ]]; then
+	ok user_dr_existing_tdo_left_untouched
+else
+	ko user_dr_existing_tdo_left_untouched "the existing TDO file was rewritten"
+fi
+
+rm -f "$T/ir" "$T/ud0.tdo" "$T/ud1.tdo" "$T/victim"
+printf keep >"$T/victim"
+ln -s "$T/victim" "$T/ud0.tdo.tmp"
+model_rc user_dr_tmp_symlink_scan 0 'IR parked in BYPASS' -- "${UD[@]}"
+if [[ $(cat "$T/victim") == keep ]]; then
+	ok user_dr_tdo_write_follows_no_tmp_symlink
+else
+	ko user_dr_tdo_write_follows_no_tmp_symlink "a symbolic link beside the TDO path was written through"
+fi
+if [[ -f $T/ud0.tdo && ! -L $T/ud0.tdo ]]; then
+	ok user_dr_tdo_is_a_regular_file
+else
+	ko user_dr_tdo_is_a_regular_file "the TDO path is not a regular file after the scan"
+fi
+rm -f "$T/ud0.tdo.tmp" "$T/victim" "$T/ud0.tdo" "$T/ud1.tdo"
 
 echo "action-refusals: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
