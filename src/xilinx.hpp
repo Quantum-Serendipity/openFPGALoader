@@ -63,6 +63,16 @@ class Xilinx: public Device, FlashInterface {
 				const std::string &out_path,
 				const std::vector<uint32_t> &far_list);
 
+		struct UserDrScan {
+			int chain;
+			std::string tdi_path;
+			std::string tdo_path;
+		};
+		static const size_t user_dr_max_bytes = 64u << 20;
+		static bool parseUserDrSpec(const std::string &spec,
+				std::vector<UserDrScan> *scans, std::string *err);
+		bool userDrScan(const std::vector<UserDrScan> &scans);
+
 		static void checkPartialPayload(const std::string &filename,
 				const std::string &file_type, int8_t verbose);
 		static void checkPayloadStream(const uint8_t *data, size_t nbytes,

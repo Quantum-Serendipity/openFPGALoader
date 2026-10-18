@@ -149,6 +149,7 @@ struct arguments {
 	bool flash_info;
 	std::string flash_info_json;
 	std::vector<uint32_t> readback_far_addrs;
+	std::string user_dr;
 };
 
 int run_xvc_server(const struct arguments &args, const cable_t &cable,
@@ -294,7 +295,8 @@ int main(int argc, char **argv)
 			"", "", "",  // readback_frames, readback_out, readback_far_list
 			false, // flash_info
 			"", // flash_info_json
-			{}
+			{},
+			""
 	};
 	/* parse arguments */
 	int ret = parse_opt(argc, argv, &args, &pins_config);
@@ -833,6 +835,39 @@ int main(int argc, char **argv)
 #endif
 		}
 
+		if (!args.user_dr.empty()) {
+#ifdef ENABLE_XILINX_SUPPORT
+			std::vector<Xilinx::UserDrScan> scans;
+			std::string why;
+			if (xilinx_fpga == NULL) {
+				printError("Error: --user-dr is a Xilinx 7-series feature "
+					"and the device on the chain is not a Xilinx FPGA");
+				delete(fpga);
+				delete(jtag);
+				return EXIT_FAILURE;
+			}
+			if (!Xilinx::parseUserDrSpec(args.user_dr, &scans, &why)) {
+				printError("Error: --user-dr " + why);
+				delete(fpga);
+				delete(jtag);
+				return EXIT_FAILURE;
+			}
+			try {
+				xilinx_fpga->userDrScan(scans);
+			} catch (std::exception &e) {
+				printError("Error: " + std::string(e.what()));
+				delete(fpga);
+				delete(jtag);
+				return EXIT_FAILURE;
+			}
+#else
+			printError("Support for Xilinx FPGAs was not enabled at compile time");
+			delete(fpga);
+			delete(jtag);
+			return EXIT_FAILURE;
+#endif
+		}
+
 		if (args.unprotect_flash && args.bit_file.empty()) {
 			fpga->unprotect_flash();
 		}
@@ -1304,6 +1339,10 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 				"per line; required by --readback-frames for more than one "
 				"frame",
 				cxxopts::value<std::string>(args->readback_far_list))
+			("user-dr", "scan user data registers of a RUNNING device "
+				"through BSCANE2: <chain>:<tdi.bin>:<tdo.bin>[,...] "
+				"(Xilinx 7-series, USER1..USER4)",
+				cxxopts::value<std::string>(args->user_dr))
 			("V,version", "Print program version")
 			("Version", "Print program version (Deprecated)");
 
@@ -1494,6 +1533,51 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			return -1;
 		}
 
+		if (!args->user_dr.empty()) {
+			std::string hit = options_beside(result, {"user-dr"});
+			if (!hit.empty()) {
+				printError("Error: --user-dr cannot be combined with " +
+					hit + ": a user-register scan reads and writes a "
+					"running design's own register and the same "
+					"invocation must not write, erase, reset or reconfigure "
+					"the device");
+				return -1;
+			}
+#ifdef ENABLE_XILINX_SUPPORT
+			std::vector<Xilinx::UserDrScan> scans;
+			std::string why;
+			if (!Xilinx::parseUserDrSpec(args->user_dr, &scans, &why)) {
+				printError("Error: --user-dr " + why);
+				return -1;
+			}
+			for (const auto &sc : scans) {
+				std::ifstream f(sc.tdi_path, std::ios::binary | std::ios::ate);
+				if (!f.is_open()) {
+					printError("Error: --user-dr: cannot open '" +
+						sc.tdi_path + "'");
+					return -1;
+				}
+				const std::streamoff n = f.tellg();
+				if (n <= 0 || static_cast<size_t>(n) > Xilinx::user_dr_max_bytes) {
+					printError("Error: --user-dr: '" + sc.tdi_path +
+						"' is empty or larger than one scan may be");
+					return -1;
+				}
+			}
+#else
+			printError("Support for Xilinx FPGAs was not enabled at compile time");
+			return -1;
+#endif
+			if (args->board[0] != '-') {
+				auto b = board_list.find(args->board);
+				if (b != board_list.end() && b->second.mode != COMM_JTAG) {
+					printError("Error: --user-dr cannot be used with "
+						"board '" + args->board + "': it is not a JTAG board");
+					return -1;
+				}
+			}
+		}
+
 		if (args->flash_info || !args->flash_info_json.empty()) {
 			std::string hit = options_beside(result, {"flash-info",
 				"flash-info-json", "detect", "skip-load-bridge", "skip-reset",
@@ -1679,6 +1763,7 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			 * unreachable except beside a bitfile, which is exactly the
 			 * combination its own refusals above forbid. */
 			args->readback_frames.empty() &&
+			args->user_dr.empty() &&
 			args->read_register.empty()) {
 			printError("Error: bitfile not specified");
 			std::cout << options.help() << std::endl;

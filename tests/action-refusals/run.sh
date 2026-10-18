@@ -428,5 +428,65 @@ refused readback_spec_negative_far 'is not a frame address' \
 refused readback_spec_octal_count 'is not a frame count' \
 	--readback-frames 0x0:010 --readback-out "$T/d.txt"
 
+head -c 32 /dev/urandom >"$T/ud0.bin"
+head -c 160 /dev/urandom >"$T/ud1.bin"
+: >"$T/ud-empty.bin"
+UD=(--user-dr "3:$T/ud0.bin:$T/ud0.tdo,3:$T/ud1.bin:$T/ud1.tdo")
+accepted user_dr_alone "${UD[@]}"
+accepted user_dr_with_selector --busdev-num 001:002 --freq 6000000 "${UD[@]}"
+refused user_dr_positional_bit '--user-dr cannot be combined with' "${UD[@]}" "$T/good.bit"
+for o in bulk-erase reset write-sram write-flash dump-flash detect read-dna spi external-flash; do
+	refused "user_dr_with_$o" "--user-dr cannot be combined with --$o" "${UD[@]}" "--$o"
+done
+refused user_dr_with_partial '--partial cannot be combined with --user-dr' \
+	"${UD[@]}" -m --partial "$T/good.bit"
+refused user_dr_with_readback '--readback-frames cannot be combined with --user-dr' \
+	"${UD[@]}" "${RB[@]}"
+refused user_dr_with_read_register '--user-dr cannot be combined with --read-register' \
+	"${UD[@]}" --read-register STAT
+refused user_dr_chain_zero 'is not one of 1, 2, 3, 4' --user-dr "0:$T/ud0.bin:$T/x.tdo"
+refused user_dr_chain_five 'is not one of 1, 2, 3, 4' --user-dr "5:$T/ud0.bin:$T/x.tdo"
+refused user_dr_two_fields 'expected <chain>:<tdi.bin>:<tdo.bin>' --user-dr "3:$T/ud0.bin"
+refused user_dr_four_fields 'expected <chain>:<tdi.bin>:<tdo.bin>' --user-dr "3:$T/ud0.bin:$T/a:$T/b"
+refused user_dr_same_file 'reads and writes the same file' --user-dr "3:$T/ud0.bin:$T/ud0.bin"
+refused user_dr_shared_tdo 'shares a TDO file' --user-dr "3:$T/ud0.bin:$T/x.tdo,3:$T/ud1.bin:$T/x.tdo"
+refused user_dr_missing_tdi 'cannot open' --user-dr "3:$T/no-such.bin:$T/x.tdo"
+refused user_dr_empty_tdi 'is empty or larger' --user-dr "3:$T/ud-empty.bin:$T/x.tdo"
+if [[ $has_xvc_server -eq 1 ]]; then
+	refused user_dr_with_xvc '--user-dr cannot be combined with --xvc' "${UD[@]}" --xvc
+fi
+rm -f "$T/ir" "$T/ud0.tdo" "$T/ud1.tdo"
+model_rc user_dr_model 0 'IR parked in BYPASS' --ir-log "$T/ir" -- "${UD[@]}"
+ir_log user_dr_model_issues_user3 "$T/ir" all 0x22 0x3f
+ir_log user_dr_model_issues_no_configuration_instruction "$T/ir" none \
+	0x02 0x03 0x04 0x05 0x0b 0x0c 0x0d 0x10 0x11 0x16 0x23 0x30 0x31 0x32 0x33 0x34 0x35
+if [[ -s $T/ir ]] && [[ -z $(grep -vx -e 0x22 -e 0x3f "$T/ir") ]]; then
+	ok user_dr_model_ir_log_is_only_user3_and_bypass
+else
+	ko user_dr_model_ir_log_is_only_user3_and_bypass "IR log: $(tr '\n' ' ' <"$T/ir" 2>/dev/null)"
+fi
+if [[ $(tail -1 "$T/ir" 2>/dev/null) == 0x3f ]]; then
+	ok user_dr_model_parks_in_bypass
+else
+	ko user_dr_model_parks_in_bypass "last IR $(tail -1 "$T/ir" 2>/dev/null)"
+fi
+if python3 - "$T/ud1.bin" "$T/ud1.tdo" <<'PY'
+import sys
+a = open(sys.argv[1], 'rb').read()
+b = open(sys.argv[2], 'rb').read()
+n = 8 * len(a)
+ia = int.from_bytes(a, 'little')
+ib = int.from_bytes(b, 'little')
+sys.exit(0 if len(b) == len(a) and ib == ((ia << 1) & ((1 << n) - 1)) else 1)
+PY
+then
+	ok user_dr_model_tdo_file_is_the_one_bit_register_echo
+else
+	ko user_dr_model_tdo_file_is_the_one_bit_register_echo "TDO file is not TDI delayed one bit"
+fi
+rm -f "$T/ir"
+model_rc user_dr_done_low_refused 1 'DONE is low' --done-low --ir-log "$T/ir" -- "${UD[@]}"
+ir_log user_dr_done_low_issues_no_user3 "$T/ir" none 0x22
+
 echo "action-refusals: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

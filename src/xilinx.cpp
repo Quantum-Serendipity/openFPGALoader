@@ -1601,6 +1601,150 @@ bool Xilinx::readbackFrames(uint32_t far, uint32_t count,
 	return true;
 }
 
+bool Xilinx::parseUserDrSpec(const std::string &spec,
+		std::vector<UserDrScan> *scans, std::string *err)
+{
+	scans->clear();
+	size_t pos = 0;
+	while (true) {
+		const size_t comma = spec.find(',', pos);
+		const std::string item = spec.substr(pos,
+			comma == std::string::npos ? std::string::npos : comma - pos);
+		const size_t c1 = item.find(':');
+		const size_t c2 = (c1 == std::string::npos) ? std::string::npos :
+			item.find(':', c1 + 1);
+		if (c1 == std::string::npos || c2 == std::string::npos ||
+				item.find(':', c2 + 1) != std::string::npos) {
+			*err = "expected <chain>:<tdi.bin>:<tdo.bin>, got '" + item + "'";
+			return false;
+		}
+		const std::string ch = item.substr(0, c1);
+		UserDrScan s;
+		if (ch.size() != 1 || ch[0] < '1' || ch[0] > '4') {
+			*err = "chain '" + ch + "' is not one of 1, 2, 3, 4 (USER1..USER4)";
+			return false;
+		}
+		s.chain = ch[0] - '0';
+		s.tdi_path = item.substr(c1 + 1, c2 - c1 - 1);
+		s.tdo_path = item.substr(c2 + 1);
+		if (s.tdi_path.empty() || s.tdo_path.empty()) {
+			*err = "'" + item + "' names an empty file";
+			return false;
+		}
+		if (s.tdi_path == s.tdo_path) {
+			*err = "'" + item + "' reads and writes the same file";
+			return false;
+		}
+		for (const auto &o : *scans) {
+			if (o.tdo_path == s.tdo_path || o.tdo_path == s.tdi_path ||
+					o.tdi_path == s.tdo_path) {
+				*err = "'" + item + "' shares a TDO file with another scan";
+				return false;
+			}
+		}
+		scans->push_back(s);
+		if (comma == std::string::npos)
+			break;
+		pos = comma + 1;
+	}
+	return !scans->empty();
+}
+
+bool Xilinx::userDrScan(const std::vector<UserDrScan> &scans)
+{
+	/* SAFETY INVARIANT: this mode may only ever shift USER1..USER4 and
+	 * BYPASS into the instruction register. Every opcode it emits comes from
+	 * this table and nowhere else; adding CFG_IN, CFG_OUT, JPROGRAM, JSTART,
+	 * JSHUTDOWN, ISC_*, XSC_* or any eFUSE-programming instruction here turns
+	 * a user-register scan into a configuration or fuse write. */
+	static const std::map<std::string, uint8_t> allowed_ir = {
+		{ "USER1",  0x02 },
+		{ "USER2",  0x03 },
+		{ "USER3",  0x22 },
+		{ "USER4",  0x23 },
+		{ "BYPASS", 0x3F },
+	};
+	auto ir_of = [&](const std::string &name) -> uint8_t {
+		const auto it = allowed_ir.find(name);
+		if (it == allowed_ir.end())
+			throw std::runtime_error("--user-dr refused: instruction " + name +
+				" is not in this mode's allow-list");
+		return it->second;
+	};
+
+	if (!(_fpga_family == ARTIX_FAMILY || _fpga_family == KINTEX_FAMILY ||
+			_fpga_family == SPARTAN7_FAMILY || _fpga_family == ZYNQ_FAMILY) ||
+			_irlen != 6)
+		throw std::runtime_error("--user-dr refused: the device is not a "
+			"single-die Xilinx 7-series part with a 6-bit instruction "
+			"register, and the allow-list's opcodes are that family's");
+	if (scans.empty())
+		throw std::runtime_error("--user-dr refused: no scan given");
+
+	std::vector<std::vector<uint8_t>> tdi(scans.size());
+	for (size_t i = 0; i < scans.size(); i++) {
+		std::ifstream f(scans[i].tdi_path, std::ios::binary);
+		if (!f.is_open())
+			throw std::runtime_error("--user-dr: cannot open '" +
+				scans[i].tdi_path + "'");
+		tdi[i].assign(std::istreambuf_iterator<char>(f),
+			std::istreambuf_iterator<char>());
+		if (tdi[i].empty())
+			throw std::runtime_error("--user-dr refused: '" +
+				scans[i].tdi_path + "' is empty");
+		if (tdi[i].size() > user_dr_max_bytes)
+			throw std::runtime_error("--user-dr refused: '" +
+				scans[i].tdi_path + "' is larger than one scan may be");
+	}
+
+	const uint8_t bypass = ir_of("BYPASS");
+	unsigned char rx_ir[2] = {0, 0};
+	unsigned char op = bypass;
+	_jtag->go_test_logic_reset();
+	_jtag->shiftIR(&op, rx_ir, _irlen, Jtag::RUN_TEST_IDLE);
+	_jtag->flush();
+	printf("Pre-scan IR capture %02x (DONE %d)\n", rx_ir[0],
+		(rx_ir[0] >> 5) & 0x01);
+	if (!((rx_ir[0] >> 5) & 0x01))
+		throw std::runtime_error("--user-dr refused: DONE is low, so no "
+			"design is running and no user register answers");
+
+	int cur = 0;
+	for (size_t i = 0; i < scans.size(); i++) {
+		if (scans[i].chain != cur) {
+			op = ir_of("USER" + std::to_string(scans[i].chain));
+			_jtag->shiftIR(&op, NULL, _irlen, Jtag::RUN_TEST_IDLE);
+			cur = scans[i].chain;
+		}
+		std::vector<uint8_t> tdo(tdi[i].size(), 0);
+		_jtag->shiftDR(tdi[i].data(), tdo.data(),
+			static_cast<int>(tdi[i].size() * 8), Jtag::RUN_TEST_IDLE);
+		_jtag->flush();
+		const std::string tmp = scans[i].tdo_path + ".tmp";
+		std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+		out.write(reinterpret_cast<const char *>(tdo.data()),
+			static_cast<std::streamsize>(tdo.size()));
+		out.close();
+		if (!out || rename(tmp.c_str(), scans[i].tdo_path.c_str()) != 0) {
+			remove(tmp.c_str());
+			op = bypass;
+			_jtag->shiftIR(&op, NULL, _irlen, Jtag::RUN_TEST_IDLE);
+			_jtag->flush();
+			throw std::runtime_error("--user-dr: writing '" +
+				scans[i].tdo_path + "' failed");
+		}
+	}
+	op = bypass;
+	_jtag->shiftIR(&op, NULL, _irlen, Jtag::RUN_TEST_IDLE);
+	_jtag->flush();
+
+	char msg[256];
+	snprintf(msg, sizeof(msg), "user-dr: %zu scan(s) shifted, IR parked in "
+		"BYPASS", scans.size());
+	printSuccess(msg);
+	return true;
+}
+
 std::unique_ptr<ConfigBitstreamParser> Xilinx::parse_bitfile(
 	const std::string &filename, const std::string &extension, bool reverse,
 	bool verbose)

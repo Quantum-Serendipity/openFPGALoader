@@ -1,7 +1,10 @@
 # action-refusals
 
-Regression arms for the refusals around `--partial`, `--readback-frames` and
-`--flash-info`, and for the labelling of a `--readback-frames` dump.
+Regression arms for the refusals around `--partial`, `--readback-frames`,
+`--user-dr` and `--flash-info`, and for the labelling of a `--readback-frames`
+dump. The `--user-dr` model arms assert from the IR log that the mode latches
+only USER3 and BYPASS, parks in BYPASS, and refuses before USER3 when DONE is
+low.
 
     tests/action-refusals/run.sh <path to openFPGALoader>
 
