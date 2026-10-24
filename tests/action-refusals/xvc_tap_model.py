@@ -395,6 +395,7 @@ def main():
     p.add_argument('--neighbour-tdi', action='append', default=[])
     p.add_argument('--ir-capture', type=lambda s: int(s, 0))
     p.add_argument('--ir-capture-in-bypass', type=lambda s: int(s, 0))
+    p.add_argument('--synced-log')
     a = p.parse_args()
     if a.compare_dump:
         want = [f for x in a.expect for f in read_dump(x)]
@@ -455,6 +456,9 @@ def main():
         if a.tlr_shift_log:
             with open(a.tlr_shift_log, 'w') as f:
                 f.write(''.join('%d\n' % x for x in tlr_shifts))
+        if a.synced_log:
+            with open(a.synced_log, 'w') as f:
+                f.write('%d\n' % int(tap.synced))
     conn.close()
     srv.close()
 
