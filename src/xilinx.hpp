@@ -72,6 +72,9 @@ class Xilinx: public Device, FlashInterface {
 		static bool parseUserDrSpec(const std::string &spec,
 				std::vector<UserDrScan> *scans, std::string *err);
 		bool userDrScan(const std::vector<UserDrScan> &scans);
+		uint8_t requireLoneSixBitTap(const std::string &mode,
+				uint8_t bypass = 0x3F);
+		void requireLoneSixBitTopology(const std::string &mode);
 
 		static void checkPartialPayload(const std::string &filename,
 				const std::string &file_type, int8_t verbose);

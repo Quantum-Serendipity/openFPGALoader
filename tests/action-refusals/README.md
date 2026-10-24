@@ -7,6 +7,10 @@ only USER3 and BYPASS, parks in BYPASS, and refuses before USER3 when DONE is
 low, when a second device sits on the chain (`--neighbour` on the TDO side,
 `--neighbour-tdi` on the TDI side, the latter with a mis-declared IR length),
 and when the IR capture does not read 01 (`--ir-capture`).
+`--partial` and `--readback-frames` (with and without `--read-register`)
+are held to the same single-device, no-padding and 01-capture refusals, and
+assert from the IR log that no CFG_IN, CFG_OUT, JPROGRAM, JSTART or
+JSHUTDOWN was latched.
 
     tests/action-refusals/run.sh <path to openFPGALoader>
 

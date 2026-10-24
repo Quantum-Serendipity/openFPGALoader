@@ -14,6 +14,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 #ifdef ENABLE_ALTERA_SUPPORT
@@ -796,6 +797,20 @@ int main(int argc, char **argv)
 			fpga->connectJtagToMCU();
 		}
 
+#ifdef ENABLE_XILINX_SUPPORT
+		if (!args.readback_frames.empty() && !args.read_register.empty() &&
+				xilinx_fpga != NULL) {
+			try {
+				xilinx_fpga->requireLoneSixBitTap("--readback-frames");
+			} catch (std::exception &e) {
+				printError("Error: " + std::string(e.what()));
+				delete(fpga);
+				delete(jtag);
+				return EXIT_FAILURE;
+			}
+		}
+#endif
+
 		if (!args.read_register.empty()) {
 			fpga->read_register(args.read_register);
 		}
@@ -1533,16 +1548,27 @@ int parse_opt(int argc, char **argv, struct arguments *args,
 			return -1;
 		}
 
-		if (!args->user_dr.empty()) {
+		const std::pair<const char *, bool> lone_tap_modes[] = {
+			{"user-dr", !args->user_dr.empty()},
+			{"partial", args->partial},
+			{"readback-frames", !args->readback_frames.empty()},
+		};
+		for (const auto &lm : lone_tap_modes) {
+			const char *m = lm.first;
+			if (!lm.second)
+				continue;
 			for (const char *o : {"misc-device", "index-chain"}) {
 				if (result.count(o)) {
-					printError(std::string("Error: --user-dr cannot be "
-						"combined with --") + o + ": this mode requires a "
+					printError(std::string("Error: --") + m + " cannot be "
+						"combined with --" + o + ": this mode requires a "
 						"single-device chain, and a neighbour declared by hand "
 						"is how a wrong IR length reaches Jtag::shiftIR");
 					return -1;
 				}
 			}
+		}
+
+		if (!args->user_dr.empty()) {
 			std::string hit = options_beside(result, {"user-dr"});
 			if (!hit.empty()) {
 				printError("Error: --user-dr cannot be combined with " +

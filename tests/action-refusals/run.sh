@@ -556,5 +556,57 @@ else
 fi
 rm -f "$T/ud0.tdo.tmp" "$T/victim" "$T/ud0.tdo" "$T/ud1.tdo"
 
+ir_empty() {
+	if [[ ! -e $2 ]]; then
+		ko "$1" "the model wrote no IR log"
+	elif [[ -s $2 ]]; then
+		ko "$1" "the FPGA latched $(tr '\n' ' ' <"$2")"
+	else
+		ok "$1"
+	fi
+}
+for m in partial readback; do
+	if [[ $m == partial ]]; then
+		MA=(-m --partial "$T/good.bit")
+		MP='--partial'
+	else
+		MA=("${RB[@]}")
+		MP='--readback-frames'
+	fi
+	for o in misc-device:0x4ba00477,4,dap index-chain:0; do
+		refused "${m}_with_${o%%:*}" "$MP cannot be combined with --${o%%:*}" \
+			"${MA[@]}" "--${o%%:*}" "${o#*:}"
+	done
+	CFG_IR=(0x04 0x05 0x0b 0x0c 0x0d)
+	rm -f "$T/ir" "$T/d.txt"
+	model_rc "${m}_two_device_chain_refused" 1 'requires exactly one device' \
+		--neighbour 0x4ba00477:4 --ir-log "$T/ir" -- "${MA[@]}"
+	ir_empty "${m}_two_device_chain_latches_no_ir" "$T/ir"
+	rm -f "$T/ir" "$T/d.txt"
+	model_rc "${m}_misdeclared_neighbour_irlength_refused" 1 'requires exactly one device' \
+		--neighbour-tdi 0x4ba00477:5 --ir-log "$T/ir" -- "${MA[@]}"
+	ir_empty "${m}_misdeclared_neighbour_latches_no_ir" "$T/ir"
+	rm -f "$T/ir" "$T/d.txt"
+	model_rc "${m}_ir_capture_not_01_refused" 1 'are not 01' \
+		--ir-capture 0x33 --ir-log "$T/ir" -- "${MA[@]}"
+	ir_log "${m}_ir_capture_not_01_latches_no_configuration_ir" "$T/ir" none "${CFG_IR[@]}"
+	if [[ $m == readback && -e $T/d.txt ]]; then
+		ko readback_refused_on_topology_leaves_no_dump "a dump was written"
+	elif [[ $m == readback ]]; then
+		ok readback_refused_on_topology_leaves_no_dump
+	fi
+done
+rm -f "$T/ir" "$T/d.txt"
+model_rc readback_with_read_register_two_device_chain_refused 1 'requires exactly one device' \
+	--neighbour 0x4ba00477:4 --ir-log "$T/ir" -- --read-register CTRL0 "${RB[@]}"
+ir_empty readback_with_read_register_two_device_chain_latches_no_ir "$T/ir"
+rm -f "$T/ir" "$T/d.txt"
+model_rc readback_with_read_register_ir_capture_not_01_refused 1 'are not 01' \
+	--ir-capture 0x33 --ir-log "$T/ir" -- --read-register CTRL0 "${RB[@]}"
+ir_log readback_with_read_register_ir_capture_not_01_latches_no_configuration_ir "$T/ir" \
+	none 0x04 0x05
+rm -f "$T/d.txt"
+model_rc readback_with_read_register_lone_tap 0 'written to' -- --read-register CTRL0 "${RB[@]}"
+
 echo "action-refusals: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
