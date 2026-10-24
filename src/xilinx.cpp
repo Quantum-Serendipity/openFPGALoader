@@ -1010,7 +1010,7 @@ void Xilinx::program_mem(ConfigBitstreamParser *bitfile)
 		 * This costs one IR shift and it is the only one of the five
 		 * refusals that cannot be decided from the command line.
 		 */
-		_jtag->shiftIR(tx_buf, rx_buf, _irlen);
+		rx_buf[0] = requireLoneSixBitTap("--partial", tx_buf[0]);
 		printf("Pre-load IR capture %02x (DONE %d)\n", rx_buf[0],
 			(rx_buf[0] >> 5) & 0x01);
 		if (!((rx_buf[0] >> 5) & 0x01))
@@ -1453,8 +1453,8 @@ bool Xilinx::readbackFrames(uint32_t far, uint32_t count,
 	}
 
 	unsigned char rx_ir[(_irlen >> 3) + 1];
-	_jtag->go_test_logic_reset();
-	_jtag->shiftIR(get_ircode(_ircode_map, "BYPASS"), rx_ir, _irlen);
+	rx_ir[0] = requireLoneSixBitTap("--readback-frames",
+		get_ircode(_ircode_map, "BYPASS")[0]);
 	printf("Pre-readback IR capture %02x (DONE %d)\n", rx_ir[0],
 		(rx_ir[0] >> 5) & 0x01);
 	if (!((rx_ir[0] >> 5) & 0x01))
@@ -1658,6 +1658,44 @@ bool Xilinx::parseUserDrSpec(const std::string &spec,
 	return !scans->empty();
 }
 
+void Xilinx::requireLoneSixBitTopology(const std::string &mode)
+{
+	if (!(_fpga_family == ARTIX_FAMILY || _fpga_family == KINTEX_FAMILY ||
+			_fpga_family == SPARTAN7_FAMILY || _fpga_family == ZYNQ_FAMILY) ||
+			_irlen != 6)
+		throw std::runtime_error(mode + " refused: the device is not a "
+			"single-die Xilinx 7-series part with a 6-bit instruction "
+			"register, and this mode's opcodes are that family's");
+	if (_jtag->get_chain_len() != 1 || _jtag->get_ir_bits_before() != 0 ||
+			_jtag->get_ir_bits_after() != 0)
+		throw std::runtime_error(mode + " refused: the JTAG chain carries " +
+			std::to_string(_jtag->get_chain_len()) + " device(s) and " +
+			std::to_string(_jtag->get_ir_bits_before() +
+				_jtag->get_ir_bits_after()) +
+			" bit(s) of neighbour IR padding; this mode requires exactly one "
+			"device with none, because a mis-declared neighbour IR length "
+			"shifts a different opcode into this device");
+}
+
+uint8_t Xilinx::requireLoneSixBitTap(const std::string &mode,
+		uint8_t bypass)
+{
+	requireLoneSixBitTopology(mode);
+	unsigned char op = bypass;
+	unsigned char rx_ir[2] = {0, 0};
+	_jtag->go_test_logic_reset();
+	_jtag->shiftIR(&op, rx_ir, _irlen, Jtag::RUN_TEST_IDLE);
+	_jtag->flush();
+	if ((rx_ir[0] & 0x03) != 0x01) {
+		char cap[8];
+		snprintf(cap, sizeof(cap), "0x%02x", rx_ir[0]);
+		throw std::runtime_error(mode + " refused: the IR capture " + cap +
+			" has two low bits that are not 01, so the instruction register "
+			"is not 6 bits at the position this mode assumes");
+	}
+	return rx_ir[0];
+}
+
 bool Xilinx::userDrScan(const std::vector<UserDrScan> &scans)
 {
 	/* SAFETY INVARIANT: this mode may only ever shift USER1..USER4 and
@@ -1685,23 +1723,9 @@ bool Xilinx::userDrScan(const std::vector<UserDrScan> &scans)
 		return it->second;
 	};
 
-	if (!(_fpga_family == ARTIX_FAMILY || _fpga_family == KINTEX_FAMILY ||
-			_fpga_family == SPARTAN7_FAMILY || _fpga_family == ZYNQ_FAMILY) ||
-			_irlen != 6)
-		throw std::runtime_error("--user-dr refused: the device is not a "
-			"single-die Xilinx 7-series part with a 6-bit instruction "
-			"register, and the allow-list's opcodes are that family's");
 	if (scans.empty())
 		throw std::runtime_error("--user-dr refused: no scan given");
-	if (_jtag->get_chain_len() != 1 || _jtag->get_ir_bits_before() != 0 ||
-			_jtag->get_ir_bits_after() != 0)
-		throw std::runtime_error("--user-dr refused: the JTAG chain carries " +
-			std::to_string(_jtag->get_chain_len()) + " device(s) and " +
-			std::to_string(_jtag->get_ir_bits_before() +
-				_jtag->get_ir_bits_after()) +
-			" bit(s) of neighbour IR padding; this mode requires exactly one "
-			"device with none, because a mis-declared neighbour IR length "
-			"shifts a different opcode into this device");
+	requireLoneSixBitTopology("--user-dr");
 
 	for (const auto &sc : scans) {
 		struct stat st;
@@ -1728,18 +1752,10 @@ bool Xilinx::userDrScan(const std::vector<UserDrScan> &scans)
 	}
 
 	const uint8_t bypass = ir_of("BYPASS");
-	unsigned char rx_ir[2] = {0, 0};
 	unsigned char op = bypass;
-	_jtag->go_test_logic_reset();
-	_jtag->shiftIR(&op, rx_ir, _irlen, Jtag::RUN_TEST_IDLE);
-	_jtag->flush();
-	printf("Pre-scan IR capture %02x (DONE %d)\n", rx_ir[0],
-		(rx_ir[0] >> 5) & 0x01);
-	if ((rx_ir[0] & 0x03) != 0x01)
-		throw std::runtime_error("--user-dr refused: the IR capture's two low "
-			"bits are not 01, so the instruction register is not 6 bits at the "
-			"position this mode assumes");
-	if (!((rx_ir[0] >> 5) & 0x01))
+	const uint8_t cap = requireLoneSixBitTap("--user-dr", bypass);
+	printf("Pre-scan IR capture %02x (DONE %d)\n", cap, (cap >> 5) & 0x01);
+	if (!((cap >> 5) & 0x01))
 		throw std::runtime_error("--user-dr refused: DONE is low, so no "
 			"design is running and no user register answers");
 
