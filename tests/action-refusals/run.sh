@@ -629,15 +629,32 @@ if grep -qF 'released with DESYNC' "$T/out"; then
 else
 	ko partial_clean_stat_reports_the_desync "no 'released with DESYNC' in the output"
 fi
-synced_after partial_crc_error_stat_leaves_engine_as_the_load_left_it 1 \
+synced_after partial_crc_error_stat_withholds_desync_and_leaves_engine_synced 1 \
 	--stat 0x401079FD -- -m --partial "$T/good.bit"
-if grep -qF 'released with DESYNC' "$T/out"; then
-	ko partial_crc_error_stat_issues_no_desync "a DESYNC was reported after a failed STAT"
+if grep -qF 'released with DESYNC' "$T/out" || ! grep -qF 'DESYNC withheld' "$T/out"; then
+	ko partial_crc_error_stat_reports_desync_withheld "a DESYNC was reported, or no 'DESYNC withheld' line"
 else
-	ok partial_crc_error_stat_issues_no_desync
+	ok partial_crc_error_stat_reports_desync_withheld
+fi
+synced_after partial_id_error_stat_still_releases_engine 0 \
+	--stat 0x4010F9FC -- -m --partial "$T/good.bit"
+if [[ $(cat "$T/rc") -ne 0 ]]; then
+	ok partial_id_error_stat_still_fails_the_load
+else
+	ko partial_id_error_stat_still_fails_the_load "exit 0"
 fi
 synced_after readback_leaves_engine_desynced 0 -- "${RB[@]}"
-synced_after read_register_alone_is_unchanged_and_leaves_engine_synced 1 -- --read-register STAT
+synced_after readback_beside_read_register_leaves_engine_desynced 0 -- \
+	--read-register CTRL0 "${RB[@]}"
+synced_after read_register_stat_leaves_engine_desynced 0 -- --read-register STAT
+if [[ $(grep -c 'Register raw value' "$T/out") -eq 1 ]]; then
+	ok read_register_stat_prints_one_raw_value_line
+else
+	ko read_register_stat_prints_one_raw_value_line "want exactly one 'Register raw value' line"
+fi
+synced_after read_register_ctrl0_leaves_engine_desynced 0 -- --read-register CTRL0
+synced_after read_register_crc_error_stat_withholds_desync 1 --stat 0x401079FD -- \
+	--read-register STAT
 
 echo "action-refusals: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]

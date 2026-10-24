@@ -1170,15 +1170,6 @@ void Xilinx::program_mem(ConfigBitstreamParser *bitfile)
 			bad += " DEC_ERROR";
 		if (!(stat & (1u << 14)))
 			bad += " DONE=0";
-		if (bad.empty()) {
-			_jtag->go_test_logic_reset();
-			_jtag->set_state(Jtag::RUN_TEST_IDLE);
-			desyncConfigEngine();
-			_jtag->go_test_logic_reset();
-			_jtag->flush();
-			printf("--partial: configuration engine released with DESYNC "
-				"after the STAT read\n");
-		}
 		if (!bad.empty()) {
 			char msg[128];
 			snprintf(msg, sizeof(msg), "--partial: STAT 0x%08x after the "
@@ -1443,10 +1434,19 @@ uint32_t Xilinx::dumpRegister(std::string reg_name)
 
 	_jtag->shiftIR(get_ircode(_ircode_map, "CFG_OUT"), NULL, _irlen, Jtag::SELECT_DR_SCAN);
 	_jtag->shiftDR(dummy, reg, 32);
-	_jtag->go_test_logic_reset();
 
 	uint32_t reg_word = char_array_to_word(reg);
 	reg_word = BitParser::reverse_32(reg_word);
+
+	if (regcode == 0x07 && (reg_word & 1u)) {
+		printf("register read: DESYNC withheld, STAT reports CRC_ERROR and "
+			"the configuration engine is left synchronised\n");
+	} else {
+		desyncConfigEngine();
+		printf("register read: configuration engine released with DESYNC\n");
+	}
+	_jtag->go_test_logic_reset();
+	_jtag->flush();
 	return reg_word;
 }
 
