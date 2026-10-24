@@ -58,6 +58,7 @@ class Xilinx: public Device, FlashInterface {
 		 * \return register value
 		 */
 		uint32_t dumpRegister(const std::string reg_name);
+		void desyncConfigEngine();
 
 		bool readbackFrames(uint32_t far, uint32_t count,
 				const std::string &out_path,

@@ -1170,6 +1170,15 @@ void Xilinx::program_mem(ConfigBitstreamParser *bitfile)
 			bad += " DEC_ERROR";
 		if (!(stat & (1u << 14)))
 			bad += " DONE=0";
+		if (bad.empty()) {
+			_jtag->go_test_logic_reset();
+			_jtag->set_state(Jtag::RUN_TEST_IDLE);
+			desyncConfigEngine();
+			_jtag->go_test_logic_reset();
+			_jtag->flush();
+			printf("--partial: configuration engine released with DESYNC "
+				"after the STAT read\n");
+		}
 		if (!bad.empty()) {
 			char msg[128];
 			snprintf(msg, sizeof(msg), "--partial: STAT 0x%08x after the "
@@ -1346,6 +1355,32 @@ static const std::map<std::string, uint8_t> reg_code = {
 	{"CTRL1",   0x18},  // Control register 1
 };
 
+void Xilinx::desyncConfigEngine()
+{
+	static const uint32_t tail[] = {
+		0x20000000,
+		0x30008001,
+		0x0000000D,
+		0x20000000,
+		0x20000000,
+	};
+	const size_t n = sizeof(tail) / sizeof(tail[0]);
+	_jtag->shiftIR(get_ircode(_ircode_map, "CFG_IN"), NULL, _irlen,
+		Jtag::SELECT_DR_SCAN);
+	for (size_t i = 0; i < n; i++) {
+		const Jtag::tapState_t next = (i == n - 1) ?
+			Jtag::SELECT_IR_SCAN : Jtag::SHIFT_DR;
+		const uint32_t tmp = BitParser::reverse_32(tail[i]);
+		const uint8_t w[] = {
+			static_cast<uint8_t>((tmp >>  0) & 0xff),
+			static_cast<uint8_t>((tmp >>  8) & 0xff),
+			static_cast<uint8_t>((tmp >> 16) & 0xff),
+			static_cast<uint8_t>((tmp >> 24) & 0xff)
+		};
+		_jtag->shiftDR(w, NULL, 32, next);
+	}
+}
+
 uint32_t Xilinx::dumpRegister(std::string reg_name)
 {
 	uint8_t reg[4];
@@ -1485,16 +1520,6 @@ bool Xilinx::readbackFrames(uint32_t far, uint32_t count,
 	};
 	const size_t cfg_in_n = sizeof(cfg_in) / sizeof(cfg_in[0]);
 
-	const uint32_t cfg_out_tail[] = {
-		0x20000000,
-		0x30008001,
-		0x0000000D,
-		0x20000000,
-		0x20000000,
-	};
-	const size_t cfg_out_tail_n =
-		sizeof(cfg_out_tail) / sizeof(cfg_out_tail[0]);
-
 	_jtag->set_state(Jtag::RUN_TEST_IDLE);
 	_jtag->shiftIR(get_ircode(_ircode_map, "CFG_IN"), NULL, _irlen,
 		Jtag::SELECT_DR_SCAN);
@@ -1519,20 +1544,7 @@ bool Xilinx::readbackFrames(uint32_t far, uint32_t count,
 		Jtag::RUN_TEST_IDLE);
 	_jtag->flush();
 
-	_jtag->shiftIR(get_ircode(_ircode_map, "CFG_IN"), NULL, _irlen,
-		Jtag::SELECT_DR_SCAN);
-	for (size_t i = 0; i < cfg_out_tail_n; i++) {
-		const Jtag::tapState_t next = (i == cfg_out_tail_n - 1) ?
-			Jtag::SELECT_IR_SCAN : Jtag::SHIFT_DR;
-		const uint32_t tmp = BitParser::reverse_32(cfg_out_tail[i]);
-		const uint8_t w[] = {
-			static_cast<uint8_t>((tmp >>  0) & 0xff),
-			static_cast<uint8_t>((tmp >>  8) & 0xff),
-			static_cast<uint8_t>((tmp >> 16) & 0xff),
-			static_cast<uint8_t>((tmp >> 24) & 0xff)
-		};
-		_jtag->shiftDR(w, NULL, 32, next);
-	}
+	desyncConfigEngine();
 	_jtag->go_test_logic_reset();
 	_jtag->flush();
 

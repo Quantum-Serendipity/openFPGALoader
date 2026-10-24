@@ -39,6 +39,9 @@ No arm can reach a cable:
   `--cfg-out-shift-log` names the shifts that carried CFG_OUT bits, so an
   arm can pick the one to cut, and `--tlr-shift-log` names the shifts that
   left the TAP in Test-Logic-Reset.
+  `--synced-log` writes whether the configuration engine was still
+  synchronised (a SYNC word seen and no DESYNC since) when the loader
+  disconnected.
 
 `OFL_RECORDED_CROSSING_DIR=<dir>` adds two arms that replay a silicon
 readback across a half and a row boundary. The directory must hold

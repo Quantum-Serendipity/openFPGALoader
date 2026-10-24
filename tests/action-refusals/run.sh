@@ -608,5 +608,36 @@ ir_log readback_with_read_register_ir_capture_not_01_latches_no_configuration_ir
 rm -f "$T/d.txt"
 model_rc readback_with_read_register_lone_tap 0 'written to' -- --read-register CTRL0 "${RB[@]}"
 
+synced_after() {
+	local name=$1 want=$2
+	shift 2
+	rm -f "$T/synced" "$T/d.txt"
+	with_model --synced-log "$T/synced" "$@"
+	local got
+	got=$(cat "$T/synced" 2>/dev/null)
+	if [[ -z $got ]]; then
+		ko "$name" "the model wrote no synced log"
+	elif [[ $got != "$want" ]]; then
+		ko "$name" "configuration engine synced=$got after the run, want $want"
+	else
+		ok "$name"
+	fi
+}
+synced_after partial_clean_stat_leaves_engine_desynced 0 -- -m --partial "$T/good.bit"
+if grep -qF 'released with DESYNC' "$T/out"; then
+	ok partial_clean_stat_reports_the_desync
+else
+	ko partial_clean_stat_reports_the_desync "no 'released with DESYNC' in the output"
+fi
+synced_after partial_crc_error_stat_leaves_engine_as_the_load_left_it 1 \
+	--stat 0x401079FD -- -m --partial "$T/good.bit"
+if grep -qF 'released with DESYNC' "$T/out"; then
+	ko partial_crc_error_stat_issues_no_desync "a DESYNC was reported after a failed STAT"
+else
+	ok partial_crc_error_stat_issues_no_desync
+fi
+synced_after readback_leaves_engine_desynced 0 -- "${RB[@]}"
+synced_after read_register_alone_is_unchanged_and_leaves_engine_synced 1 -- --read-register STAT
+
 echo "action-refusals: $pass passed, $fail failed"
 [[ $fail -eq 0 ]]
