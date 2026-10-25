@@ -145,6 +145,9 @@ class Jtag {
 		if (_jtag->flush() < 0)
 			throw std::runtime_error("JTAG flush failed");
 	}
+	uint32_t preferred_xfer_bits(uint32_t default_bits) {
+		return _jtag->preferred_xfer_bits(default_bits);
+	}
 	void setTMS(unsigned char tms);
 
 	const char *getStateName(tapState_t s);
